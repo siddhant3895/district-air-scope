@@ -1,0 +1,99 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-display: "Instrument Serif", Georgia, serif;
+  --font-sans: "DM Sans", system-ui, sans-serif;
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sage: var(--sage);
+  --color-terracotta: var(--terracotta);
+  --color-aqi-good: var(--aqi-good);
+  --color-aqi-satisfactory: var(--aqi-satisfactory);
+  --color-aqi-moderate: var(--aqi-moderate);
+  --color-aqi-poor: var(--aqi-poor);
+  --color-aqi-verypoor: var(--aqi-verypoor);
+  --color-aqi-severe: var(--aqi-severe);
+}
+
+:root {
+  --radius: 0.375rem;
+  --background: oklch(0.969 0.009 95);      /* #F7F5EF */
+  --foreground: oklch(0.262 0.012 110);     /* #25251F */
+  --card: oklch(0.996 0.006 95);            /* #FFFEFA */
+  --card-foreground: oklch(0.262 0.012 110);
+  --popover: oklch(0.996 0.006 95);
+  --popover-foreground: oklch(0.262 0.012 110);
+  --primary: oklch(0.262 0.012 110);
+  --primary-foreground: oklch(0.996 0.006 95);
+  --secondary: oklch(0.94 0.012 95);
+  --secondary-foreground: oklch(0.262 0.012 110);
+  --muted: oklch(0.945 0.01 95);
+  --muted-foreground: oklch(0.5 0.015 110);
+  --accent: oklch(0.93 0.02 60);
+  --accent-foreground: oklch(0.262 0.012 110);
+  --destructive: oklch(0.55 0.18 28);
+  --destructive-foreground: oklch(0.996 0.006 95);
+  --border: oklch(0.89 0.01 90);
+  --input: oklch(0.87 0.012 90);
+  --ring: oklch(0.6 0.1 45);
+  --sage: oklch(0.63 0.04 125);             /* #87917B */
+  --terracotta: oklch(0.6 0.11 42);         /* #B96B50 */
+  /* CPCB AQI categories — distinct hues, text set on them is charcoal or cream */
+  --aqi-good: oklch(0.62 0.13 150);
+  --aqi-satisfactory: oklch(0.78 0.13 120);
+  --aqi-moderate: oklch(0.84 0.15 90);
+  --aqi-poor: oklch(0.7 0.16 55);
+  --aqi-verypoor: oklch(0.55 0.19 28);
+  --aqi-severe: oklch(0.38 0.13 15);
+  --shadow-soft: 0 1px 2px oklch(0.26 0.01 110 / 0.04), 0 4px 16px -8px oklch(0.26 0.01 110 / 0.08);
+}
+
+@layer base {
+  * { border-color: var(--color-border); }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.01em; }
+}
+
+@utility surface {
+  background-color: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+}
+@utility eyebrow {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-weight: 500;
+  color: var(--color-muted-foreground);
+}
