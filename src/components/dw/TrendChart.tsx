@@ -28,7 +28,7 @@ export function TrendChart({ history, title = "30-day trend" }: { history: Readi
                 <XAxis dataKey="date" tickFormatter={fmt} tick={{ fill: "var(--muted-foreground)", fontSize: 12 }} axisLine={{ stroke: "var(--border)" }} tickLine={false} minTickGap={28} />
                 <YAxis tick={{ fill: "var(--muted-foreground)", fontSize: 12 }} axisLine={false} tickLine={false} width={44} />
                 {[100, 200, 300].map((y) => (
-                  <ReferenceLine key={y} y={y} stroke="var(--sage)" strokeDasharray="3 4" label={{ value: aqiBand(y + 1)?.label, position: "insideTopRight", fill: "var(--muted-foreground)", fontSize: 11 }} />
+                  <ReferenceLine key={y} y={y} stroke="var(--sage)" strokeDasharray="3 4" label={{ value: aqiBand(y + 1)?.label ?? "", position: "insideTopRight", fill: "var(--muted-foreground)", fontSize: 11 }} />
                 ))}
                 <Tooltip
                   contentStyle={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6, fontSize: 12 }}

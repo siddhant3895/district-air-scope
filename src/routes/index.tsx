@@ -8,11 +8,11 @@ import { DistrictSelector } from "@/components/dw/DistrictSelector";
 import { QualityIndicator } from "@/components/dw/primitives";
 
 export const Route = createFileRoute("/")({
-  validateSearch: (s: Record<string, unknown>) => ({ d: typeof s.d === "string" ? s.d : "new-delhi" }),
-  loaderDeps: ({ search }) => ({ d: search.d }),
+  validateSearch: (s: Record<string, unknown>): { d?: string } => (typeof s["d"] === "string" ? { d: s["d"] } : {}),
+  loaderDeps: ({ search }) => ({ d: search.d ?? "new-delhi" }),
   loader: async ({ deps }) => {
     const [snaps, active] = await Promise.all([airQuality.listSnapshots(), airQuality.getSnapshot(deps.d)]);
-    return { snaps, active: active ?? snaps[0] };
+    return { snaps, active: (active ?? snaps[0])! };
   },
   head: () => ({
     meta: [

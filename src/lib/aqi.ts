@@ -20,7 +20,7 @@ export const AQI_BANDS: AqiBand[] = [
 
 export function aqiBand(aqi: number | null): AqiBand | null {
   if (aqi === null) return null;
-  return AQI_BANDS.find((b) => aqi <= b.max) ?? AQI_BANDS[AQI_BANDS.length - 1];
+  return AQI_BANDS.find((b) => aqi <= b.max) ?? AQI_BANDS[AQI_BANDS.length - 1]!;
 }
 
 export const AQI_CSS_VAR: Record<AqiBand["key"], string> = {
