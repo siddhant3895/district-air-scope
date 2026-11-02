@@ -1,0 +1,58 @@
+{
+  "meta": {
+    "name": "openaq-api",
+    "page": 1,
+    "limit": 1000,
+    "found": 3
+  },
+  "results": [
+    {
+      "value": 90.0,
+      "parameter": { "id": 2, "name": "pm25", "units": "µg/m³" },
+      "period": {
+        "label": "1hour",
+        "interval": "01:00:00",
+        "datetimeFrom": { "utc": "2026-11-02T01:00:00Z", "local": "2026-11-02T06:30:00+05:30" },
+        "datetimeTo": { "utc": "2026-11-02T02:00:00Z", "local": "2026-11-02T07:30:00+05:30" }
+      },
+      "coverage": {
+        "expectedCount": 1,
+        "observedCount": 1,
+        "percentComplete": 100.0,
+        "percentCoverage": 100.0
+      }
+    },
+    {
+      "value": 120.0,
+      "parameter": { "id": 2, "name": "pm25", "units": "µg/m³" },
+      "period": {
+        "label": "1hour",
+        "interval": "01:00:00",
+        "datetimeFrom": { "utc": "2026-11-02T02:00:00Z", "local": "2026-11-02T07:30:00+05:30" },
+        "datetimeTo": { "utc": "2026-11-02T03:00:00Z", "local": "2026-11-02T08:30:00+05:30" }
+      },
+      "coverage": {
+        "expectedCount": 1,
+        "observedCount": 0,
+        "percentComplete": 0.0,
+        "percentCoverage": 0.0
+      }
+    },
+    {
+      "value": -12.5,
+      "parameter": { "id": 2, "name": "pm25", "units": "µg/m³" },
+      "period": {
+        "label": "1hour",
+        "interval": "01:00:00",
+        "datetimeFrom": { "utc": "2026-11-02T03:00:00Z", "local": "2026-11-02T08:30:00+05:30" },
+        "datetimeTo": { "utc": "2026-11-02T04:00:00Z", "local": "2026-11-02T09:30:00+05:30" }
+      },
+      "coverage": {
+        "expectedCount": 1,
+        "observedCount": 1,
+        "percentComplete": 100.0,
+        "percentCoverage": 100.0
+      }
+    }
+  ]
+}

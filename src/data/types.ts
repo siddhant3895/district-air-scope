@@ -35,7 +35,7 @@ export interface DistrictSnapshot {
   caveats: string[];
   pollutants: Pollutant[];
   history: Reading[];
-  isIllustrative: true;
+  isIllustrative: boolean;
 }
 
 export interface AirQualityService {

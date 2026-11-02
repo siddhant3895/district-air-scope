@@ -1,6 +1,6 @@
 import { Clock, Database, FlaskConical, ShieldCheck, ShieldAlert, ShieldQuestion, ShieldOff } from "lucide-react";
 import type { QualityLevel } from "@/data";
-import { aqiBand, relativeTime } from "@/lib/aqi";
+import { aqiBand, referenceNow, relativeTime } from "@/lib/aqi";
 import { cn } from "@/lib/utils";
 
 export function IllustrativeLabel({ className }: { className?: string }) {
@@ -22,7 +22,7 @@ export function AqiPill({ aqi, size = "sm" }: { aqi: number | null; size?: "sm" 
 }
 
 export function FreshnessBadge({ updatedAt, source }: { updatedAt: string | null; source: string }) {
-  const stale = updatedAt && (new Date("2026-11-01T00:00:00Z").getTime() - new Date(updatedAt).getTime()) / 3600000 > 6;
+  const stale = updatedAt && (referenceNow().getTime() - new Date(updatedAt).getTime()) / 3600000 > 6;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
       <span className={cn("inline-flex items-center gap-1", stale && "text-terracotta")}>
