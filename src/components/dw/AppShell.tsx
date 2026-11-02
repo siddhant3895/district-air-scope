@@ -1,11 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
-const NAV = [
-  { to: "/", label: "Overview" },
-  { to: "/districts/$districtId", label: "Districts", params: { districtId: "new-delhi" } },
-  { to: "/methodology", label: "Methodology" },
-] as const;
 
 export function AppShell({ children }: { children: ReactNode }) {
   return (
@@ -20,17 +15,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             <span className="hidden text-xs text-muted-foreground sm:inline">Air quality, district by district</span>
           </Link>
           <nav className="flex gap-1 text-sm">
-            {NAV.map((n) => (
-              <Link
-                key={n.label}
-                to={n.to}
-                params={"params" in n ? n.params : undefined}
-                activeOptions={{ exact: n.to === "/" , includeSearch: false }}
-                className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground data-[status=active]:bg-secondary data-[status=active]:text-foreground"
-              >
-                {n.label}
-              </Link>
-            ))}
+            <Link to="/" activeOptions={{ exact: true, includeSearch: false }} className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground data-[status=active]:bg-secondary data-[status=active]:text-foreground">Overview</Link>
+            <Link to="/districts/$districtId" params={{ districtId: "new-delhi" }} activeOptions={{ exact: false }} className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground data-[status=active]:bg-secondary data-[status=active]:text-foreground">Districts</Link>
+            <Link to="/methodology" className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground data-[status=active]:bg-secondary data-[status=active]:text-foreground">Methodology</Link>
           </nav>
         </div>
       </header>
