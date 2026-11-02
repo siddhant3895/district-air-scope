@@ -1,0 +1,57 @@
+{
+  "meta": {
+    "name": "openaq-api",
+    "page": 1,
+    "limit": 100,
+    "found": 3
+  },
+  "results": [
+    {
+      "id": 8118,
+      "name": "Mandir Marg, New Delhi - DPCC",
+      "locality": "New Delhi",
+      "timezone": "Asia/Kolkata",
+      "country": { "id": 9, "code": "IN", "name": "India" },
+      "owner": { "id": 4, "name": "Delhi Pollution Control Committee" },
+      "provider": { "id": 119, "name": "CPCB" },
+      "isMobile": false,
+      "isMonitor": true,
+      "sensors": [
+        { "id": 23534, "name": "pm25 µg/m³", "parameter": { "id": 2, "name": "pm25", "units": "µg/m³", "displayName": "PM2.5" } },
+        { "id": 23535, "name": "pm10 µg/m³", "parameter": { "id": 1, "name": "pm10", "units": "µg/m³", "displayName": "PM10" } },
+        { "id": 23536, "name": "no2 ppb",   "parameter": { "id": 7, "name": "no2",  "units": "ppb",   "displayName": "NO2" } },
+        { "id": 23537, "name": "so2 µg/m³", "parameter": { "id": 9, "name": "so2",  "units": "µg/m³", "displayName": "SO2" } },
+        { "id": 23538, "name": "o3 µg/m³",  "parameter": { "id": 10, "name": "o3",  "units": "µg/m³", "displayName": "O3" } },
+        { "id": 23539, "name": "co ppm",    "parameter": { "id": 8, "name": "co",   "units": "ppm",   "displayName": "CO" } }
+      ],
+      "coordinates": { "latitude": 28.6364, "longitude": 77.2011 },
+      "licenses": [
+        { "id": 33, "name": "GODL-India", "attribution": { "name": "CPCB / DPCC", "url": "https://cpcb.nic.in" } }
+      ],
+      "datetimeFirst": { "utc": "2018-01-01T00:00:00Z", "local": "2018-01-01T05:30:00+05:30" },
+      "datetimeLast": { "utc": "2026-11-02T05:30:00Z", "local": "2026-11-02T11:00:00+05:30" }
+    },
+    {
+      "id": 9901,
+      "name": "Defunct Historical Sensor",
+      "isMobile": false,
+      "isMonitor": true,
+      "sensors": [
+        { "id": 30001, "parameter": { "name": "pm25", "units": "µg/m³" } },
+        { "id": 30002, "parameter": { "name": "pm10", "units": "µg/m³" } },
+        { "id": 30003, "parameter": { "name": "no2",  "units": "µg/m³" } }
+      ],
+      "datetimeLast": { "utc": "2024-01-15T10:00:00Z" }
+    },
+    {
+      "id": 9902,
+      "name": "Low-Cost Non-Reference Node",
+      "isMobile": false,
+      "isMonitor": false,
+      "sensors": [
+        { "id": 30004, "parameter": { "name": "pm25", "units": "µg/m³" } }
+      ],
+      "datetimeLast": { "utc": "2026-11-02T05:30:00Z" }
+    }
+  ]
+}

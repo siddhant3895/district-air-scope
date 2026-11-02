@@ -4,7 +4,7 @@ Create a new project named DistrictWatch and build its initial FRONTEND DESIGN P
 
 VISUAL DIRECTION: warm editorial data platform. Cream-white, refined, modern, polished and readable. Take inspiration from customer-health dashboard information hierarchy, AssetWise warm styling, and editorial portfolio typography/spacing. This should have a distinct DistrictWatch identity, not copy a template.
 
-TOKENS: page background #F7F5EF; surfaces #FFFEFA; warm charcoal #25251F; muted sage #87917B; terracotta #B96B50; thin warm-gray borders. Use Instrument Serif (display headings) paired with DM Sans (UI/body). Generous whitespace, intentional grids, restrained subtle shadows. Avoid generic blue SaaS, glassmorphism, excessive gradients, over-rounded cards, and decorative animation. AQI severity colors must remain distinct, understandable, and accessible.
+TOKENS: page background #F7F5EF; surfaces #FFFEFA; warm charcoal #25251F; muted sage #87917B; terracotta #B96B50; thin warm-gray borders. Use Manrope (display headings) paired with Inter (UI/body). Generous whitespace, intentional grids, restrained subtle shadows. Avoid generic blue SaaS, glassmorphism, excessive gradients, over-rounded cards, and decorative animation. AQI severity colors must remain distinct, understandable, and accessible.
 
 BUILD THESE ROUTES/SCREENS:
 1) Overview dashboard: top navigation/brand, district selector, latest AQI summary panel, historical trend chart, district comparison, freshness/source attribution and data quality indicators.

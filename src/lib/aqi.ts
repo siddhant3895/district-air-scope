@@ -1,4 +1,6 @@
 // CPCB National AQI category bands (India).
+import { DATA_IS_ILLUSTRATIVE } from "@/data";
+
 export interface AqiBand {
   key: "good" | "satisfactory" | "moderate" | "poor" | "verypoor" | "severe";
   label: string;
@@ -32,8 +34,12 @@ export const AQI_CSS_VAR: Record<AqiBand["key"], string> = {
   severe: "var(--aqi-severe)",
 };
 
-export function relativeTime(iso: string | null, now = new Date("2026-11-01T00:00:00Z")) {
+export function referenceNow(): Date {
+  return DATA_IS_ILLUSTRATIVE ? new Date("2026-11-01T00:00:00Z") : new Date();
+}
+
+export function relativeTime(iso: string | null, now = referenceNow()) {
   if (!iso) return "No data";
-  const h = Math.round((now.getTime() - new Date(iso).getTime()) / 3600000);
+  const h = Math.max(0, Math.round((now.getTime() - new Date(iso).getTime()) / 3600000));
   return h <= 1 ? "Updated ~1h ago" : `Updated ${h}h ago`;
 }
