@@ -37,3 +37,16 @@ cd <repository-name>
 npm i
 npm run dev
 ```
+
+## Frontend & Backend API Configuration
+
+DistrictWatch connects to the Python FastAPI backend (`backend/`) in live mode by default (`VITE_DATA_MODE=live`).
+
+### Environment Variables (`.env`)
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `VITE_DATA_MODE` | `live` | Set to `live` to query the FastAPI backend, or `mock` for offline illustrative preview. |
+| `VITE_API_BASE_URL` | `/api` | Base URL used by the client/browser adapter (`src/data/api-service.ts`). Use `/api` when reverse-proxied from the same origin (or during `vite dev`), or set to an absolute URL (e.g., `https://api.districtwatch.example.com/api`) when the backend is hosted on a separate origin. |
+| `VITE_BACKEND_ORIGIN` | `http://localhost:8000` | **SSR & Proxy Backend Origin**: Required whenever `VITE_API_BASE_URL` is a relative path (`/api`). During server-side rendering (SSR) in TanStack Start, Node.js `fetch()` cannot resolve relative URLs without an origin, so `src/data/api-service.ts` prepends `VITE_BACKEND_ORIGIN` (e.g., `http://localhost:8000` locally or `http://backend-api:8000` in Docker). `vite.config.ts` also uses `VITE_BACKEND_ORIGIN` for the `/api` dev proxy. |
+| `VITE_ALLOW_MOCK_FALLBACK` | `false` | Must remain `false` in staging and production; production builds (`import.meta.env.PROD`) strictly forbid mock fallback. |

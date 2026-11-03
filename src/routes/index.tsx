@@ -1,5 +1,10 @@
 import { createFileRoute, useNavigate, useRouter } from "@tanstack/react-router";
-import { airQuality, DATA_IS_ILLUSTRATIVE, type DistrictSnapshot, type HealthResponse } from "@/data";
+import {
+  airQuality,
+  DATA_IS_ILLUSTRATIVE,
+  type DistrictSnapshot,
+  type HealthResponse,
+} from "@/data";
 import { AppShell } from "@/components/dw/AppShell";
 import { AqiSummaryCard } from "@/components/dw/AqiSummaryCard";
 import { TrendChart } from "@/components/dw/TrendChart";
@@ -15,7 +20,8 @@ interface OverviewLoaderData {
 }
 
 export const Route = createFileRoute("/")({
-  validateSearch: (s: Record<string, unknown>): { d?: string } => (typeof s["d"] === "string" ? { d: s["d"] } : {}),
+  validateSearch: (s: Record<string, unknown>): { d?: string } =>
+    typeof s["d"] === "string" ? { d: s["d"] } : {},
   loaderDeps: ({ search }) => ({ d: search.d ?? "new-delhi" }),
   loader: async ({ deps }): Promise<OverviewLoaderData> => {
     try {
@@ -38,9 +44,16 @@ export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "DistrictWatch — District air quality overview" },
-      { name: "description", content: "Nationwide district-level AQI in India: latest readings, 30-day trends, comparison and data quality." },
+      {
+        name: "description",
+        content:
+          "Nationwide district-level AQI in India: latest readings, 30-day trends, comparison and data quality.",
+      },
       { property: "og:title", content: "DistrictWatch — District air quality overview" },
-      { property: "og:description", content: "District-level AQI in India with trends, comparison and data quality signals." },
+      {
+        property: "og:description",
+        content: "District-level AQI in India with trends, comparison and data quality signals.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
@@ -58,7 +71,9 @@ function Overview() {
       <AppShell>
         <div className="mb-10">
           <p className="eyebrow mb-2">Overview · India</p>
-          <h1 className="max-w-2xl text-4xl leading-[1.05] md:text-6xl">The air, read district by district.</h1>
+          <h1 className="max-w-2xl text-4xl leading-[1.05] md:text-6xl">
+            The air, read district by district.
+          </h1>
         </div>
         <div className="surface p-8">
           <EmptyState
@@ -94,7 +109,9 @@ function Overview() {
       <div className="mb-10 grid gap-6 md:grid-cols-[1fr_auto] md:items-end">
         <div>
           <p className="eyebrow mb-2">Overview · India</p>
-          <h1 className="max-w-2xl text-4xl leading-[1.05] md:text-6xl">The air, read district by district.</h1>
+          <h1 className="max-w-2xl text-4xl leading-[1.05] md:text-6xl">
+            The air, read district by district.
+          </h1>
         </div>
         <DistrictSelector
           districts={snaps.map((s) => s.district)}
@@ -119,7 +136,9 @@ function Overview() {
             {(["high", "medium", "low", "unavailable"] as const).map((q) => (
               <li key={q} className="flex items-center justify-between">
                 <QualityIndicator level={q} />
-                <span className="text-sm tabular-nums">{snaps.filter((s) => s.quality === q).length}</span>
+                <span className="text-sm tabular-nums">
+                  {snaps.filter((s) => s.quality === q).length}
+                </span>
               </li>
             ))}
           </ul>

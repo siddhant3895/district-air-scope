@@ -9,7 +9,7 @@ import type {
 
 export interface ApiServiceOptions {
   baseUrl: string;
-  fallback?: AirQualityService;
+  fallback?: AirQualityService | undefined;
 }
 
 function resolveBaseUrl(baseUrl: string): string {
@@ -20,9 +20,12 @@ function resolveBaseUrl(baseUrl: string): string {
   // During SSR / Node execution where relative URLs ("/api") require an origin,
   // resolve against VITE_BACKEND_ORIGIN or http://localhost:8000.
   if (typeof window === "undefined") {
-    const serverOrigin =
-      (typeof process !== "undefined" && process.env?.VITE_BACKEND_ORIGIN) ||
-      "http://localhost:8000";
+    const proc = (
+      globalThis as unknown as {
+        process?: { env?: Record<string, string | undefined> };
+      }
+    ).process;
+    const serverOrigin = proc?.env?.["VITE_BACKEND_ORIGIN"] || "http://localhost:8000";
     const cleanOrigin = serverOrigin.replace(/\/+$/, "");
     const cleanPath = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
     return `${cleanOrigin}${cleanPath}`;
@@ -77,7 +80,7 @@ export function createApiService({ baseUrl, fallback }: ApiServiceOptions): AirQ
         const qs = buildQueryString(anchorDate ? { anchorDate } : undefined);
         return await request<DistrictSnapshot>(
           `/snapshots/${encodeURIComponent(id)}${qs}`,
-          true
+          true,
         );
       } catch (err) {
         if (fallback) return fallback.getSnapshot(id, anchorDate);

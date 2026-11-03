@@ -54,15 +54,15 @@ export interface HealthResponse {
   openaqKeyConfigured: boolean;
   districtsTracked: number;
   lastIngestedAt: string | null;
-  lastSyncStatus?: string;
-  freshDistrictsCount?: number;
-  providers?: Record<string, ProviderHealthStatus>;
+  lastSyncStatus?: string | undefined;
+  freshDistrictsCount?: number | undefined;
+  providers?: Record<string, ProviderHealthStatus> | undefined;
 }
 
 export interface DistrictQueryFilters {
-  state?: string;
-  q?: string;
-  anchorDate?: string;
+  state?: string | undefined;
+  q?: string | undefined;
+  anchorDate?: string | undefined;
 }
 
 export interface AirQualityService {

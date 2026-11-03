@@ -3,7 +3,13 @@ import { DATA_IS_ILLUSTRATIVE, type QualityLevel } from "@/data";
 import { aqiBand, referenceNow, relativeTime } from "@/lib/aqi";
 import { cn } from "@/lib/utils";
 
-export function IllustrativeLabel({ className, show = DATA_IS_ILLUSTRATIVE }: { className?: string; show?: boolean }) {
+export function IllustrativeLabel({
+  className,
+  show = DATA_IS_ILLUSTRATIVE,
+}: {
+  className?: string | undefined;
+  show?: boolean | undefined;
+}) {
   if (!show) return null;
   return (
     <span className={cn("inline-flex items-center gap-1.5 rounded-sm border border-terracotta/40 bg-accent px-2 py-0.5 text-[11px] font-medium text-terracotta", className)}>

@@ -65,7 +65,7 @@ function build(d: (typeof DISTRICTS)[number], idx: number): DistrictSnapshot {
 
 const SNAPSHOTS = DISTRICTS.map(build);
 
-function filterMockSnapshots(filters?: { state?: string; q?: string }) {
+function filterMockSnapshots(filters?: { state?: string | undefined; q?: string | undefined }) {
   let list = SNAPSHOTS;
   if (filters?.state && filters.state.trim()) {
     const sNorm = filters.state.trim().toLowerCase();
@@ -77,7 +77,7 @@ function filterMockSnapshots(filters?: { state?: string; q?: string }) {
       (s) =>
         s.district.name.toLowerCase().includes(qNorm) ||
         s.district.state.toLowerCase().includes(qNorm) ||
-        s.district.id.toLowerCase().includes(qNorm)
+        s.district.id.toLowerCase().includes(qNorm),
     );
   }
   return list;

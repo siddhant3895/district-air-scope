@@ -5,7 +5,13 @@ import { AQI_CSS_VAR, aqiBand } from "@/lib/aqi";
 import { cn } from "@/lib/utils";
 import { AqiPill, IllustrativeLabel, QualityIndicator, SectionHeader } from "./primitives";
 
-export function DistrictComparison({ snaps, activeId }: { snaps: DistrictSnapshot[]; activeId?: string }) {
+export function DistrictComparison({
+  snaps,
+  activeId,
+}: {
+  snaps: DistrictSnapshot[];
+  activeId?: string | undefined;
+}) {
   const [stateFilter, setStateFilter] = useState<string>("");
   const [query, setQuery] = useState<string>("");
 
@@ -29,14 +35,20 @@ export function DistrictComparison({ snaps, activeId }: { snaps: DistrictSnapsho
         }
         return true;
       })
-      .sort((a, b) => (b.aqi ?? -1) - (a.aqi ?? -1) || a.district.name.localeCompare(b.district.name));
+      .sort(
+        (a, b) => (b.aqi ?? -1) - (a.aqi ?? -1) || a.district.name.localeCompare(b.district.name),
+      );
   }, [snaps, stateFilter, query]);
 
   const anyIllustrative = snaps.some((s) => s.isIllustrative);
 
   return (
     <section className="surface p-6">
-      <SectionHeader eyebrow="Ranked by latest AQI" title="District comparison" right={<IllustrativeLabel show={anyIllustrative} />} />
+      <SectionHeader
+        eyebrow="Ranked by latest AQI"
+        title="District comparison"
+        right={<IllustrativeLabel show={anyIllustrative} />}
+      />
       {snaps.length > 7 && (
         <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
           <input
@@ -63,7 +75,9 @@ export function DistrictComparison({ snaps, activeId }: { snaps: DistrictSnapsho
         </div>
       )}
       {filteredAndSorted.length === 0 ? (
-        <p className="py-6 text-center text-xs text-muted-foreground">No districts match the current filter.</p>
+        <p className="py-6 text-center text-xs text-muted-foreground">
+          No districts match the current filter.
+        </p>
       ) : (
         <ul className="max-h-[28rem] divide-y overflow-y-auto pr-1">
           {filteredAndSorted.map((s, i) => {
@@ -75,7 +89,7 @@ export function DistrictComparison({ snaps, activeId }: { snaps: DistrictSnapsho
                   params={{ districtId: s.district.id }}
                   className={cn(
                     "grid grid-cols-[1.5rem_1fr_auto] items-center gap-3 py-3 transition-colors hover:bg-muted/60 sm:grid-cols-[1.5rem_minmax(8rem,1fr)_2fr_auto_auto] sm:gap-4",
-                    activeId === s.district.id && "bg-muted/60"
+                    activeId === s.district.id && "bg-muted/60",
                   )}
                 >
                   <span className="pl-1 text-xs tabular-nums text-muted-foreground">{i + 1}</span>
@@ -87,12 +101,17 @@ export function DistrictComparison({ snaps, activeId }: { snaps: DistrictSnapsho
                     {b && s.aqi !== null && (
                       <span
                         className="block h-full rounded-sm"
-                        style={{ width: `${Math.min(100, (s.aqi / 500) * 100)}%`, background: AQI_CSS_VAR[b.key] }}
+                        style={{
+                          width: `${Math.min(100, (s.aqi / 500) * 100)}%`,
+                          background: AQI_CSS_VAR[b.key],
+                        }}
                       />
                     )}
                   </span>
                   <span className="flex items-center gap-2 justify-self-end">
-                    <span className="w-9 text-right font-display text-xl tabular-nums">{s.aqi ?? "—"}</span>
+                    <span className="w-9 text-right font-display text-xl tabular-nums">
+                      {s.aqi ?? "—"}
+                    </span>
                     <AqiPill aqi={s.aqi} />
                   </span>
                   <span className="hidden pr-1 sm:block">

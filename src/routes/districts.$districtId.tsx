@@ -5,7 +5,14 @@ import { AppShell } from "@/components/dw/AppShell";
 import { AqiSummaryCard } from "@/components/dw/AqiSummaryCard";
 import { TrendChart } from "@/components/dw/TrendChart";
 import { DistrictSelector } from "@/components/dw/DistrictSelector";
-import { AqiPill, EmptyState, FreshnessBadge, IllustrativeLabel, QualityIndicator, SectionHeader } from "@/components/dw/primitives";
+import {
+  AqiPill,
+  EmptyState,
+  FreshnessBadge,
+  IllustrativeLabel,
+  QualityIndicator,
+  SectionHeader,
+} from "@/components/dw/primitives";
 
 export const Route = createFileRoute("/districts/$districtId")({
   loader: async ({ params }) => {
@@ -21,9 +28,15 @@ export const Route = createFileRoute("/districts/$districtId")({
     return {
       meta: [
         { title: `${n} air quality — DistrictWatch` },
-        { name: "description", content: `AQI, 30-day trend, pollutant breakdown and station coverage for ${n}.` },
+        {
+          name: "description",
+          content: `AQI, 30-day trend, pollutant breakdown and station coverage for ${n}.`,
+        },
         { property: "og:title", content: `${n} air quality — DistrictWatch` },
-        { property: "og:description", content: `District AQI detail for ${n}, with source attribution and quality caveats.` },
+        {
+          property: "og:description",
+          content: `District AQI detail for ${n}, with source attribution and quality caveats.`,
+        },
         { property: "og:type", content: "website" },
         { name: "twitter:card", content: "summary_large_image" },
       ],
@@ -49,14 +62,18 @@ function DistrictDetail() {
   const { snap, districts } = Route.useLoaderData();
   const navigate = useNavigate();
   const hasAnyPollutantReading = snap.pollutants.some(
-    (p) => p.value !== null || p.subIndex !== null
+    (p) => p.value !== null || p.subIndex !== null,
   );
   const maxSub = Math.max(1, ...snap.pollutants.map((p) => p.subIndex ?? 0));
 
   return (
     <AppShell>
       <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
-        <Link to="/" search={{ d: snap.district.id }} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+        <Link
+          to="/"
+          search={{ d: snap.district.id }}
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
           <ArrowLeft className="size-4" /> Overview
         </Link>
         <DistrictSelector
@@ -152,7 +169,9 @@ function DistrictDetail() {
         <section className="surface p-6">
           <SectionHeader eyebrow="Read with care" title="Caveats" />
           {snap.caveats.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No caveats flagged for this evaluation window.</p>
+            <p className="text-sm text-muted-foreground">
+              No caveats flagged for this evaluation window.
+            </p>
           ) : (
             <ul className="space-y-3">
               {snap.caveats.map((c) => (
@@ -163,7 +182,10 @@ function DistrictDetail() {
               ))}
             </ul>
           )}
-          <Link to="/methodology" className="mt-5 inline-block text-sm font-medium text-terracotta hover:underline">
+          <Link
+            to="/methodology"
+            className="mt-5 inline-block text-sm font-medium text-terracotta hover:underline"
+          >
             How we assess quality →
           </Link>
         </section>
