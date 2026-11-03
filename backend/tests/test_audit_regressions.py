@@ -506,5 +506,265 @@ class TestPriority5ApiHealthFreshnessAndProviderIsolation(unittest.TestCase):
         self.assertTrue(resp_fresh["providers"]["openaq_v3"]["hasFreshData"])
 
 
+
+
+class TestSharedHttpRateLimitingAcrossSync(unittest.TestCase):
+    """Regression tests verifying a single shared RateLimitedHttpClient across an entire run_sync() execution."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.temp_dir.name, "test_shared_http.db")
+        self.prev_env = {
+            k: os.environ.get(k)
+            for k in (
+                "DATABASE_URL",
+                "DATA_GOV_IN_API_KEY",
+                "OPENAQ_API_KEY",
+                "MIN_REQUEST_INTERVAL_SEC",
+                "MAX_HTTP_RETRIES",
+            )
+        }
+        os.environ["DATABASE_URL"] = f"sqlite:///{self.db_path}"
+        os.environ["DATA_GOV_IN_API_KEY"] = "cpcb-live-test-key"
+        os.environ["OPENAQ_API_KEY"] = "openaq-live-test-key"
+        os.environ["MIN_REQUEST_INTERVAL_SEC"] = "1.0"
+        os.environ["MAX_HTTP_RETRIES"] = "2"
+
+    def tearDown(self) -> None:
+        for k, val in self.prev_env.items():
+            if val is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = val
+        self.temp_dir.cleanup()
+
+    def test_single_shared_client_across_all_adapters_and_cross_provider_pacing(self) -> None:
+        """Verify all CPCB & OpenAQ calls in one sync share one RateLimitedHttpClient and maintain pacing across providers."""
+        import app.cli as cli_mod
+        from app.ingestion.http_utils import create_shared_http_client
+
+        sleeps: List[float] = []
+        clock_val = [1000.0]
+        request_log: List[Dict[str, Any]] = []
+        observed_clients_in_adapters: List[RateLimitedHttpClient] = []
+
+        def fake_sleep(sec: float) -> None:
+            sleeps.append(round(sec, 3))
+            clock_val[0] += sec
+
+        def fake_clock() -> float:
+            return clock_val[0]
+
+        def mock_transport_handler(request: httpx.Request) -> httpx.Response:
+            url_str = str(request.url)
+            provider = "cpcb" if "data.gov.in" in url_str else "openaq"
+            request_log.append(
+                {
+                    "provider": provider,
+                    "url": url_str,
+                    "timestamp": round(clock_val[0], 3),
+                }
+            )
+            # Simulate a tiny 0.1s network elapsed time per request (< 1.0s min_interval_sec)
+            clock_val[0] += 0.1
+
+            if "data.gov.in" in url_str:
+                return httpx.Response(200, json={"records": []})
+            if "/v3/locations/" in url_str:
+                loc_id = int(url_str.split("/v3/locations/")[1].split("?")[0])
+                return httpx.Response(
+                    200,
+                    json={
+                        "results": [
+                            {
+                                "id": loc_id,
+                                "name": f"Station {loc_id}",
+                                "isMonitor": True,
+                                "isMobile": False,
+                                "datetimeLast": {"utc": "2026-11-02T11:00:00Z"},
+                                "sensors": [
+                                    {"id": loc_id * 10 + 1, "parameter": {"name": "pm25", "units": "µg/m³"}},
+                                    {"id": loc_id * 10 + 2, "parameter": {"name": "pm10", "units": "µg/m³"}},
+                                    {"id": loc_id * 10 + 3, "parameter": {"name": "no2", "units": "µg/m³"}},
+                                ],
+                            }
+                        ]
+                    },
+                )
+            if "/v3/locations" in url_str:
+                return httpx.Response(200, json={"results": []})
+            if "/v3/sensors/" in url_str and "/hours" in url_str:
+                return httpx.Response(200, json={"results": []})
+            return httpx.Response(200, json={})
+
+        transport = httpx.MockTransport(mock_transport_handler)
+        created_clients: List[RateLimitedHttpClient] = []
+
+        def factory_spy(settings=None):
+            client = create_shared_http_client(
+                settings,
+                sleep_fn=fake_sleep,
+                clock_fn=fake_clock,
+                transport=transport,
+            )
+            created_clients.append(client)
+            return client
+
+        orig_cpcb = cli_mod.fetch_cpcb_ogd_page
+        orig_oaq_loc = cli_mod.fetch_openaq_location
+        orig_oaq_disc = cli_mod.discover_openaq_locations_near_coordinates
+        orig_oaq_hours = cli_mod.fetch_openaq_sensor_hours
+
+        def wrap_cpcb(*args, **kwargs):
+            observed_clients_in_adapters.append(kwargs.get("http_client"))
+            return orig_cpcb(*args, **kwargs)
+
+        def wrap_oaq_loc(*args, **kwargs):
+            observed_clients_in_adapters.append(kwargs.get("http_client"))
+            return orig_oaq_loc(*args, **kwargs)
+
+        def wrap_oaq_disc(*args, **kwargs):
+            observed_clients_in_adapters.append(kwargs.get("http_client"))
+            return orig_oaq_disc(*args, **kwargs)
+
+        def wrap_oaq_hours(*args, **kwargs):
+            observed_clients_in_adapters.append(kwargs.get("http_client"))
+            return orig_oaq_hours(*args, **kwargs)
+
+        ref_now = datetime(2026, 11, 2, 12, 0, 0, tzinfo=timezone.utc)
+        with (
+            patch.object(cli_mod, "create_shared_http_client", side_effect=factory_spy),
+            patch.object(cli_mod, "fetch_cpcb_ogd_page", side_effect=wrap_cpcb),
+            patch.object(cli_mod, "fetch_openaq_location", side_effect=wrap_oaq_loc),
+            patch.object(cli_mod, "discover_openaq_locations_near_coordinates", side_effect=wrap_oaq_disc),
+            patch.object(cli_mod, "fetch_openaq_sensor_hours", side_effect=wrap_oaq_hours),
+        ):
+            res = run_sync(days=2, overlap_hours=3, now_utc=ref_now)
+
+        self.assertEqual(res["overall_status"], "succeeded")
+        self.assertEqual(res["cpcb_status"], "succeeded")
+        self.assertEqual(res["openaq_status"], "succeeded")
+
+        # 1. Verify exactly ONE RateLimitedHttpClient was created for the entire sync run
+        self.assertEqual(len(created_clients), 1)
+        shared_client = created_clients[0]
+        self.assertIsInstance(shared_client, RateLimitedHttpClient)
+
+        # 2. Verify every single CPCB & OpenAQ adapter invocation received that exact same client instance
+        self.assertGreater(len(observed_clients_in_adapters), 10)
+        self.assertTrue(all(c is shared_client for c in observed_clients_in_adapters))
+        self.assertEqual(shared_client.request_count, len(request_log))
+
+        # 3. Verify request pacing (MIN_REQUEST_INTERVAL_SEC=1.0s) was enforced across ALL requests,
+        # including across the CPCB -> OpenAQ provider transition boundary!
+        cpcb_indices = [i for i, r in enumerate(request_log) if r["provider"] == "cpcb"]
+        openaq_indices = [i for i, r in enumerate(request_log) if r["provider"] == "openaq"]
+        self.assertGreater(len(cpcb_indices), 0)
+        self.assertGreater(len(openaq_indices), 0)
+        first_openaq_idx = openaq_indices[0]
+        self.assertEqual(first_openaq_idx, cpcb_indices[-1] + 1)
+
+        for i in range(1, len(request_log)):
+            prev_ts = request_log[i - 1]["timestamp"]
+            curr_ts = request_log[i]["timestamp"]
+            # Because each request takes 0.1s and pacing sleeps 0.9s before the next request,
+            # consecutive request timestamps must be separated by at least 1.0s (including CPCB -> OpenAQ)
+            self.assertGreaterEqual(
+                round(curr_ts - prev_ts, 3),
+                1.0,
+                f"Pacing violated between request {i-1} ({request_log[i-1]}) and {i} ({request_log[i]})",
+            )
+
+        # Every request after the first required a 0.9s pacing sleep
+        self.assertEqual(len(sleeps), len(request_log) - 1)
+        self.assertTrue(all(s == 0.9 for s in sleeps))
+
+    def test_new_sync_run_creates_fresh_client_and_preserves_retry_and_isolation(self) -> None:
+        """Verify separate run_sync() runs create distinct clients while preserving retry/backoff & failure isolation."""
+        import app.cli as cli_mod
+        from app.ingestion.http_utils import create_shared_http_client
+
+        sleeps: List[float] = []
+        clock_val = [5000.0]
+
+        def fake_sleep(sec: float) -> None:
+            sleeps.append(round(sec, 3))
+            clock_val[0] += sec
+
+        def fake_clock() -> float:
+            return clock_val[0]
+
+        cpcb_attempts = [0]
+        openaq_loc_attempts = [0]
+
+        def handler_with_retries_and_cpcb_outage(request: httpx.Request) -> httpx.Response:
+            url_str = str(request.url)
+            if "data.gov.in" in url_str:
+                cpcb_attempts[0] += 1
+                # Always return 503 so CPCB retries max_retries (2) times and then fails safely
+                return httpx.Response(503, json={"error": "CPCB gateway unavailable"})
+
+            if "/v3/locations/8118" in url_str:
+                openaq_loc_attempts[0] += 1
+                # First attempt hits 429 with Retry-After=2.0, second attempt succeeds
+                if openaq_loc_attempts[0] == 1:
+                    return httpx.Response(429, headers={"Retry-After": "2.0"}, json={"error": "rate_limited"})
+                return httpx.Response(
+                    200,
+                    json={
+                        "results": [
+                            {
+                                "id": 8118,
+                                "name": "Mandir Marg",
+                                "isMonitor": True,
+                                "isMobile": False,
+                                "datetimeLast": {"utc": "2026-11-02T11:00:00Z"},
+                                "sensors": [
+                                    {"id": 81181, "parameter": {"name": "pm25", "units": "µg/m³"}},
+                                    {"id": 81182, "parameter": {"name": "pm10", "units": "µg/m³"}},
+                                    {"id": 81183, "parameter": {"name": "no2", "units": "µg/m³"}},
+                                ],
+                            }
+                        ]
+                    },
+                )
+            if "/v3/locations" in url_str:
+                return httpx.Response(200, json={"results": []})
+            if "/v3/sensors/" in url_str and "/hours" in url_str:
+                return httpx.Response(200, json={"results": []})
+            return httpx.Response(200, json={})
+
+        transport = httpx.MockTransport(handler_with_retries_and_cpcb_outage)
+        created_clients: List[RateLimitedHttpClient] = []
+
+        def factory_spy(settings=None):
+            client = create_shared_http_client(
+                settings,
+                sleep_fn=fake_sleep,
+                clock_fn=fake_clock,
+                transport=transport,
+            )
+            created_clients.append(client)
+            return client
+
+        ref_now = datetime(2026, 11, 2, 12, 0, 0, tzinfo=timezone.utc)
+        with patch.object(cli_mod, "create_shared_http_client", side_effect=factory_spy):
+            res_run1 = run_sync(days=1, overlap_hours=3, now_utc=ref_now)
+            res_run2 = run_sync(days=1, overlap_hours=3, now_utc=ref_now + timedelta(minutes=30))
+
+        # Verify each sync run instantiated its own fresh RateLimitedHttpClient
+        self.assertEqual(len(created_clients), 2)
+        self.assertIsNot(created_clients[0], created_clients[1])
+
+        # Verify Run 1 retried CPCB (1 initial + 2 retries = 3 attempts), failed CPCB,
+        # retried OpenAQ 429 once (sleeping 2.0s from Retry-After), and succeeded on OpenAQ
+        self.assertEqual(res_run1["overall_status"], "partial_failure")
+        self.assertEqual(res_run1["cpcb_status"], "failed")
+        self.assertEqual(res_run1["openaq_status"], "succeeded")
+        self.assertIn(2.0, sleeps)
+        # Across 2 runs, CPCB attempted 3 times per run = 6 total attempts
+        self.assertEqual(cpcb_attempts[0], 6)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,6 +20,7 @@ from app.districts_registry import (
     list_verified_stations_for_district,
 )
 from app.ingestion.cpcb_adapter import fetch_cpcb_ogd_page, parse_cpcb_ogd_payload
+from app.ingestion.http_utils import create_shared_http_client
 from app.ingestion.openaq_adapter import (
     discover_openaq_locations_near_coordinates,
     fetch_openaq_location,
@@ -195,6 +196,11 @@ def run_sync(
 ) -> Dict[str, Any]:
     """Run an incremental (or initial backfill) CLI ingestion sync with provider failure isolation."""
     settings = get_settings()
+    shared_http_client = (
+        http_client
+        if http_client is not None
+        else create_shared_http_client(settings)
+    )
     backfill_days = days if days is not None else settings.initial_backfill_days
     inc_overlap_hours = (
         overlap_hours if overlap_hours is not None else settings.incremental_overlap_hours
@@ -233,7 +239,7 @@ def run_sync(
                             settings.data_gov_in_api_key,
                             state=entry.cpcb_state,
                             city=city,
-                            http_client=http_client,
+                            http_client=shared_http_client,
                         )
                         report = parse_cpcb_ogd_payload(payload, ingested_at_utc=started_iso)
                         cpcb_ingested += insert_raw_observations(conn, report.accepted_observations)
@@ -262,7 +268,7 @@ def run_sync(
 
                     if loc_id is not None:
                         loc_payload = fetch_openaq_location(
-                            settings.openaq_api_key, loc_id, http_client=http_client
+                            settings.openaq_api_key, loc_id, http_client=shared_http_client
                         )
                         results = loc_payload.get("results") or []
                         if results:
@@ -273,7 +279,7 @@ def run_sync(
                             lat=st.lat,
                             lon=st.lon,
                             radius_meters=2500,
-                            http_client=http_client,
+                            http_client=shared_http_client,
                         )
                         for cand in near_payload.get("results") or []:
                             cand_val = validate_openaq_location(cand, reference_now_utc=ref_now)
@@ -318,7 +324,7 @@ def run_sync(
                             sensor.sensor_id,
                             datetime_from_utc=start_utc_str,
                             datetime_to_utc=end_utc_str,
-                            http_client=http_client,
+                            http_client=shared_http_client,
                         )
                         hourly_obs = parse_openaq_hourly_payload(
                             station_id=st.station_id,
