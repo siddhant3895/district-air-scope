@@ -2008,5 +2008,294 @@ class TestLegacyUnverifiedCpcbMigrationAndRecomputation(unittest.TestCase):
             self.assertEqual(daily_after["reporting_stations"], 0)
 
 
+
+    def test_daily_history_reconciles_when_source_attribution_dominant_quality_or_pollutants_are_stale(self) -> None:
+        """Verify daily_district_history reconciles even when AQI & reporting_stations match if source, dominant, quality, or pollutants are stale."""
+        from app.migrations import (
+            MIGRATIONS,
+            run_migrations,
+            upsert_daily_district_history,
+            upsert_districts,
+            upsert_station_evaluation,
+            upsert_stations,
+        )
+        from app.models import DailyDistrictHistoryRecord
+        from app.districts_registry import list_target_districts, REVIEWED_STATIONS
+
+        with get_db_connection() as conn:
+            for version, name, sql in MIGRATIONS[:2]:
+                conn.executescript(sql)
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at_utc) VALUES (?, ?, ?)",
+                    (version, name, "2026-10-01T00:00:00Z"),
+                )
+            upsert_districts(conn, list_target_districts())
+            upsert_stations(conn, REVIEWED_STATIONS)
+
+            eval_dt = datetime(2026, 10, 5, 12, 0, 0, tzinfo=timezone.utc)
+
+            # Case A (Bengaluru Urban on 2026-10-05):
+            # Station evaluation is openaq_v3 with station_aqi=100, reporting_stations=1.
+            # daily_district_history has matching district_aqi=100 and reporting_stations=1,
+            # BUT has stale hybrid source_attribution ("CPCB / SPCB CAAQMS via OpenAQ v3 & data.gov.in (GODL-India)").
+            blr_st = list_verified_stations_for_district("bengaluru-urban")[0]
+            blr_obs = []
+            for h in range(18):
+                ts = (eval_dt - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                for p_key, conc, sub_i in [("PM2.5", 60.0, 100), ("PM10", 100.0, 100), ("NO2", 40.0, 50)]:
+                    blr_obs.append(
+                        RawStationObservation(
+                            station_id=blr_st.station_id,
+                            source_provider="openaq_v3",
+                            upstream_sensor_or_record_id=f"blr:{p_key}:{ts}",
+                            pollutant_key=p_key,  # type: ignore[arg-type]
+                            observed_at_utc=ts,
+                            window_hours=1,
+                            raw_value_text=str(conc),
+                            raw_unit="µg/m³",
+                            value_kind="concentration",
+                            normalized_concentration=conc,
+                            normalized_unit="µg/m³",
+                            calculated_sub_index=sub_i,
+                            is_valid=True,
+                            validation_note="Verified OpenAQ",
+                            raw_payload_json="{}",
+                            ingested_at_utc=ts,
+                        )
+                    )
+            insert_raw_observations(conn, blr_obs)
+            ev_blr = evaluate_station_window(
+                station=blr_st, observations=blr_obs, evaluation_end_utc=eval_dt
+            )
+            self.assertEqual(ev_blr.source_provider, "openaq_v3")
+            self.assertEqual(ev_blr.station_aqi, 100)
+            upsert_station_evaluation(conn, ev_blr)
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="bengaluru-urban",
+                    date="2026-10-05",
+                    district_aqi=100,
+                    dominant_pollutant="PM2.5",
+                    updated_at_utc="2026-10-05T12:00:00Z",
+                    source_attribution="CPCB / SPCB CAAQMS via OpenAQ v3 & data.gov.in (GODL-India)",
+                    reporting_stations=1,
+                    registered_stations=6,
+                    observed_station_pollutant_hours=54,
+                    expected_station_pollutant_hours=672,
+                    coverage=round(54 / 672, 4),
+                    quality="low",
+                    pollutants_json='[{"key":"PM2.5","value":60.0,"unit":"µg/m³","subIndex":100}]',
+                    caveats_json="[]",
+                ),
+            )
+
+            # Case B (Mumbai Suburban on 2026-10-05):
+            # Station evaluation is openaq_v3 with station_aqi=120, dominant_pollutant='PM10', quality='low' (1 station).
+            # daily_district_history has matching district_aqi=120, reporting_stations=1, and source_attribution='CPCB / SPCB CAAQMS via OpenAQ v3',
+            # BUT has stale dominant_pollutant='SO2', stale quality='high', and stale pollutants_json (PM10 subIndex=50 instead of 120).
+            mum_st = list_verified_stations_for_district("mumbai-suburban")[0]
+            mum_obs = []
+            for h in range(18):
+                ts = (eval_dt - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                for p_key, conc, sub_i in [("PM2.5", 45.0, 75), ("PM10", 130.0, 120), ("NO2", 40.0, 50)]:
+                    mum_obs.append(
+                        RawStationObservation(
+                            station_id=mum_st.station_id,
+                            source_provider="openaq_v3",
+                            upstream_sensor_or_record_id=f"mum:{p_key}:{ts}",
+                            pollutant_key=p_key,  # type: ignore[arg-type]
+                            observed_at_utc=ts,
+                            window_hours=1,
+                            raw_value_text=str(conc),
+                            raw_unit="µg/m³",
+                            value_kind="concentration",
+                            normalized_concentration=conc,
+                            normalized_unit="µg/m³",
+                            calculated_sub_index=sub_i,
+                            is_valid=True,
+                            validation_note="Verified OpenAQ",
+                            raw_payload_json="{}",
+                            ingested_at_utc=ts,
+                        )
+                    )
+            insert_raw_observations(conn, mum_obs)
+            ev_mum = evaluate_station_window(
+                station=mum_st, observations=mum_obs, evaluation_end_utc=eval_dt
+            )
+            self.assertEqual(ev_mum.station_aqi, 120)
+            self.assertEqual(ev_mum.dominant_pollutant, "PM10")
+            upsert_station_evaluation(conn, ev_mum)
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="mumbai-suburban",
+                    date="2026-10-05",
+                    district_aqi=120,
+                    dominant_pollutant="SO2",
+                    updated_at_utc="2026-10-05T12:00:00Z",
+                    source_attribution="CPCB / SPCB CAAQMS via OpenAQ v3",
+                    reporting_stations=1,
+                    registered_stations=7,
+                    observed_station_pollutant_hours=54,
+                    expected_station_pollutant_hours=784,
+                    coverage=round(54 / 784, 4),
+                    quality="high",
+                    pollutants_json='[{"key":"PM10","value":50.0,"unit":"µg/m³","subIndex":50}]',
+                    caveats_json="[]",
+                ),
+            )
+            conn.commit()
+
+            # Run Migration 003
+            self.assertEqual(run_migrations(conn), [3])
+
+            # Verify Case A (Bengaluru Urban): stale source_attribution was updated to OpenAQ-only
+            blr_row = conn.execute(
+                "SELECT district_aqi, reporting_stations, source_attribution FROM daily_district_history WHERE district_id = 'bengaluru-urban' AND date = '2026-10-05'"
+            ).fetchone()
+            self.assertEqual(blr_row["district_aqi"], 100)
+            self.assertEqual(blr_row["reporting_stations"], 1)
+            self.assertEqual(blr_row["source_attribution"], "CPCB / SPCB CAAQMS via OpenAQ v3")
+
+            # Verify Case B (Mumbai Suburban): stale dominant_pollutant, quality, and pollutants_json were reconciled
+            mum_row = conn.execute(
+                "SELECT district_aqi, dominant_pollutant, quality, pollutants_json FROM daily_district_history WHERE district_id = 'mumbai-suburban' AND date = '2026-10-05'"
+            ).fetchone()
+            self.assertEqual(mum_row["district_aqi"], 120)
+            self.assertEqual(mum_row["dominant_pollutant"], "PM10")
+            self.assertEqual(mum_row["quality"], "low")
+            mum_pollutants = {p["key"]: p for p in json.loads(mum_row["pollutants_json"])}
+            self.assertEqual(mum_pollutants["PM10"]["subIndex"], 120)
+            self.assertEqual(mum_pollutants["PM10"]["value"], 130.0)
+
+    def test_daily_history_coverage_floating_point_tolerance_and_genuine_coverage_mismatch(self) -> None:
+        """Verify minor float precision differences in coverage do not trigger false mismatches, while real coverage drift reconciles."""
+        from app.migrations import (
+            MIGRATIONS,
+            _is_daily_history_out_of_sync,
+            run_migrations,
+            upsert_daily_district_history,
+            upsert_districts,
+            upsert_station_evaluation,
+            upsert_stations,
+        )
+        from app.models import DailyDistrictHistoryRecord
+        from app.districts_registry import get_district_mapping, list_target_districts, REVIEWED_STATIONS
+
+        with get_db_connection() as conn:
+            for version, name, sql in MIGRATIONS[:2]:
+                conn.executescript(sql)
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at_utc) VALUES (?, ?, ?)",
+                    (version, name, "2026-10-01T00:00:00Z"),
+                )
+            upsert_districts(conn, list_target_districts())
+            upsert_stations(conn, REVIEWED_STATIONS)
+
+            eval_dt = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
+            kol_mapping = get_district_mapping("kolkata")
+            assert kol_mapping is not None
+            kol_stations = list_verified_stations_for_district("kolkata")
+            kol_st = kol_stations[0]
+
+            obs = []
+            for h in range(18):
+                ts = (eval_dt - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                for p_key, conc, sub_i in [("PM2.5", 60.0, 100), ("PM10", 100.0, 100), ("NO2", 40.0, 50)]:
+                    obs.append(
+                        RawStationObservation(
+                            station_id=kol_st.station_id,
+                            source_provider="openaq_v3",
+                            upstream_sensor_or_record_id=f"kol_cov:{p_key}:{ts}",
+                            pollutant_key=p_key,  # type: ignore[arg-type]
+                            observed_at_utc=ts,
+                            window_hours=1,
+                            raw_value_text=str(conc),
+                            raw_unit="µg/m³",
+                            value_kind="concentration",
+                            normalized_concentration=conc,
+                            normalized_unit="µg/m³",
+                            calculated_sub_index=sub_i,
+                            is_valid=True,
+                            validation_note="Verified OpenAQ",
+                            raw_payload_json="{}",
+                            ingested_at_utc=ts,
+                        )
+                    )
+            insert_raw_observations(conn, obs)
+            ev_kol = evaluate_station_window(station=kol_st, observations=obs, evaluation_end_utc=eval_dt)
+            upsert_station_evaluation(conn, ev_kol)
+
+            expected_rec = aggregate_district_for_date(
+                district=kol_mapping.district,
+                registered_stations=kol_stations,
+                station_evaluations=[ev_kol],
+                evaluation_date="2026-10-07",
+                updated_at_utc="2026-10-07T12:00:00Z",
+                source_attribution="auto",
+                now_utc=eval_dt,
+            )
+            # 54 / 672 = 0.08035714285714286 (unrounded) vs 0.0804 (rounded to 4 decimals)
+            unrounded_cov = 54.0 / 672.0
+            self.assertAlmostEqual(unrounded_cov, expected_rec.coverage, places=4)
+            self.assertNotEqual(unrounded_cov, expected_rec.coverage)
+
+            # Subcase 1: Insert row with unrounded float coverage (54 / 784) -> must NOT be considered out of sync
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="kolkata",
+                    date="2026-10-07",
+                    district_aqi=expected_rec.district_aqi,
+                    dominant_pollutant=expected_rec.dominant_pollutant,
+                    updated_at_utc=expected_rec.updated_at_utc,
+                    source_attribution=expected_rec.source_attribution,
+                    reporting_stations=expected_rec.reporting_stations,
+                    registered_stations=expected_rec.registered_stations,
+                    observed_station_pollutant_hours=expected_rec.observed_station_pollutant_hours,
+                    expected_station_pollutant_hours=expected_rec.expected_station_pollutant_hours,
+                    coverage=unrounded_cov,
+                    quality=expected_rec.quality,
+                    pollutants_json=expected_rec.pollutants_json,
+                    caveats_json=expected_rec.caveats_json,
+                ),
+            )
+            stored_unrounded_row = conn.execute(
+                "SELECT * FROM daily_district_history WHERE district_id = 'kolkata' AND date = '2026-10-07'"
+            ).fetchone()
+            self.assertFalse(_is_daily_history_out_of_sync(stored_unrounded_row, expected_rec))
+
+            # Subcase 2: Insert row with genuinely stale coverage (0.75 instead of 0.0689) while AQI & stations match
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="kolkata",
+                    date="2026-10-07",
+                    district_aqi=expected_rec.district_aqi,
+                    dominant_pollutant=expected_rec.dominant_pollutant,
+                    updated_at_utc=expected_rec.updated_at_utc,
+                    source_attribution=expected_rec.source_attribution,
+                    reporting_stations=expected_rec.reporting_stations,
+                    registered_stations=expected_rec.registered_stations,
+                    observed_station_pollutant_hours=588,
+                    expected_station_pollutant_hours=784,
+                    coverage=0.75,
+                    quality=expected_rec.quality,
+                    pollutants_json=expected_rec.pollutants_json,
+                    caveats_json=expected_rec.caveats_json,
+                ),
+            )
+            conn.commit()
+
+            # Run Migration 003 -> must detect the genuine coverage mismatch and reconcile coverage back to 0.0689
+            self.assertEqual(run_migrations(conn), [3])
+            reconciled_row = conn.execute(
+                "SELECT coverage, observed_station_pollutant_hours FROM daily_district_history WHERE district_id = 'kolkata' AND date = '2026-10-07'"
+            ).fetchone()
+            self.assertEqual(reconciled_row["coverage"], expected_rec.coverage)
+            self.assertEqual(reconciled_row["observed_station_pollutant_hours"], 54)
+
+
 if __name__ == "__main__":
     unittest.main()

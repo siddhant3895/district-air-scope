@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 import json
+import math
 import sqlite3
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 from app.districts_registry import (
@@ -460,6 +461,122 @@ def _has_valid_explicit_unit_cpcb_in_station_window(
     return row is not None
 
 
+def _pollutants_aggregates_match(
+    stored_json_str: Optional[str],
+    expected_json_str: str,
+) -> bool:
+    """Compare persisted pollutants_json aggregates with NULL safety and floating-point tolerance."""
+    try:
+        stored_list = json.loads(stored_json_str or "[]")
+        expected_list = json.loads(expected_json_str or "[]")
+    except (ValueError, TypeError):
+        return False
+
+    if not isinstance(stored_list, list) or not isinstance(expected_list, list):
+        return False
+    if not stored_list and expected_list:
+        return False
+
+    stored_by_key = {
+        item["key"]: item
+        for item in stored_list
+        if isinstance(item, dict) and "key" in item
+    }
+    expected_by_key = {
+        item["key"]: item
+        for item in expected_list
+        if isinstance(item, dict) and "key" in item
+    }
+
+    keys_to_check = (
+        expected_by_key.keys()
+        if len(stored_by_key) == len(expected_by_key)
+        else stored_by_key.keys()
+    )
+    if not keys_to_check:
+        return False
+
+    for k in keys_to_check:
+        st_item = stored_by_key.get(k)
+        exp_item = expected_by_key.get(k)
+        if st_item is None or exp_item is None:
+            return False
+
+        st_sub = int(st_item["subIndex"]) if st_item.get("subIndex") is not None else None
+        exp_sub = int(exp_item["subIndex"]) if exp_item.get("subIndex") is not None else None
+        if st_sub != exp_sub:
+            return False
+
+        st_val = st_item.get("value")
+        exp_val = exp_item.get("value")
+        if (st_val is None) != (exp_val is None):
+            return False
+        if st_val is not None and exp_val is not None:
+            if not math.isclose(float(st_val), float(exp_val), rel_tol=1e-3, abs_tol=1e-3):
+                return False
+
+    return True
+
+
+def _is_daily_history_out_of_sync(
+    daily_row: sqlite3.Row,
+    expected_rec: DailyDistrictHistoryRecord,
+) -> bool:
+    """Return True if any meaningful derived field on `daily_row` differs from `expected_rec`.
+
+    Covers:
+    - `district_aqi` (NULL-safe integer comparison)
+    - `dominant_pollutant` (NULL-safe string comparison)
+    - `reporting_stations` (integer count)
+    - `coverage` (float comparison with 1e-4 tolerance to avoid false mismatches from rounding)
+    - `quality` (quality classification)
+    - `source_attribution` (provider provenance string)
+    - `pollutants_json` (pollutant sub-index and concentration aggregates)
+    """
+    stored_aqi = int(daily_row["district_aqi"]) if daily_row["district_aqi"] is not None else None
+    if stored_aqi != expected_rec.district_aqi:
+        return True
+
+    stored_dominant = (
+        str(daily_row["dominant_pollutant"])
+        if daily_row["dominant_pollutant"] is not None
+        else None
+    )
+    if stored_dominant != expected_rec.dominant_pollutant:
+        return True
+
+    stored_reporting = (
+        int(daily_row["reporting_stations"])
+        if daily_row["reporting_stations"] is not None
+        else 0
+    )
+    if stored_reporting != int(expected_rec.reporting_stations):
+        return True
+
+    stored_coverage = (
+        float(daily_row["coverage"]) if daily_row["coverage"] is not None else 0.0
+    )
+    if not math.isclose(
+        stored_coverage, float(expected_rec.coverage), rel_tol=1e-4, abs_tol=1e-4
+    ):
+        return True
+
+    stored_quality = str(daily_row["quality"] or "")
+    if stored_quality != expected_rec.quality:
+        return True
+
+    stored_source = str(daily_row["source_attribution"] or "")
+    if stored_source != expected_rec.source_attribution:
+        return True
+
+    if not _pollutants_aggregates_match(
+        daily_row["pollutants_json"], expected_rec.pollutants_json
+    ):
+        return True
+
+    return False
+
+
 def _reconcile_evaluations_after_migration_003(
     conn: sqlite3.Connection,
     invalidated_cpcb_rows: List[sqlite3.Row],
@@ -589,41 +706,32 @@ def _reconcile_evaluations_after_migration_003(
             valid_evals = [
                 ev for ev in station_evals if ev.is_valid_station_aqi and ev.station_aqi is not None
             ]
-            expected_reporting = len(valid_evals)
-            expected_aqi = (
-                int(round(sum(ev.station_aqi for ev in valid_evals if ev.station_aqi is not None) / expected_reporting))
-                if expected_reporting > 0
-                else None
+            latest_valid_ts: Optional[str] = None
+            for ev in valid_evals:
+                if latest_valid_ts is None or ev.evaluation_timestamp_utc > latest_valid_ts:
+                    latest_valid_ts = ev.evaluation_timestamp_utc
+            ref_now_utc = (
+                _parse_utc(latest_valid_ts)
+                if latest_valid_ts is not None
+                else ist_date_bounds_in_utc(target_date)[1]
+            )
+            expected_rec = aggregate_district_for_date(
+                district=district,
+                registered_stations=verified_stations,
+                station_evaluations=station_evals,
+                evaluation_date=target_date,
+                updated_at_utc=latest_valid_ts,
+                source_attribution="auto",
+                now_utc=ref_now_utc,
             )
 
-            out_of_sync = False
-            if daily_row is not None:
-                if (
-                    daily_row["district_aqi"] != expected_aqi
-                    or int(daily_row["reporting_stations"]) != expected_reporting
-                ):
-                    out_of_sync = True
+            out_of_sync = (
+                daily_row is not None
+                and _is_daily_history_out_of_sync(daily_row, expected_rec)
+            )
 
             if (d_id, target_date) in districts_dates_to_reaggregate or out_of_sync:
-                latest_valid_ts: Optional[str] = None
-                for ev in valid_evals:
-                    if latest_valid_ts is None or ev.evaluation_timestamp_utc > latest_valid_ts:
-                        latest_valid_ts = ev.evaluation_timestamp_utc
-                ref_now_utc = (
-                    _parse_utc(latest_valid_ts)
-                    if latest_valid_ts is not None
-                    else ist_date_bounds_in_utc(target_date)[1]
-                )
-                reagg_rec = aggregate_district_for_date(
-                    district=district,
-                    registered_stations=verified_stations,
-                    station_evaluations=station_evals,
-                    evaluation_date=target_date,
-                    updated_at_utc=latest_valid_ts,
-                    source_attribution="auto",
-                    now_utc=ref_now_utc,
-                )
-                upsert_daily_district_history(conn, reagg_rec)
+                upsert_daily_district_history(conn, expected_rec)
         elif daily_row is not None:
             # No station_aqi_evaluations rows exist for (d_id, target_date), but a daily_district_history row exists.
             # Check if this daily record claimed CPCB/hybrid provenance or depended on unitless CPCB observations
