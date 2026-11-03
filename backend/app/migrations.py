@@ -4,12 +4,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import sqlite3
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Optional, Tuple
 from app.models import (
     DailyDistrictHistoryRecord,
     RawStationObservation,
     StationAqiEvaluation,
     StationRecord,
+    SyncRunRecord,
 )
 from app.schemas import District
 
@@ -127,11 +128,14 @@ MIGRATIONS: Tuple[Tuple[int, str, str], ...] = (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             started_at_utc TEXT NOT NULL,
             completed_at_utc TEXT,
-            status TEXT NOT NULL,
+            overall_status TEXT NOT NULL,
+            cpcb_status TEXT NOT NULL,
             cpcb_observations_ingested INTEGER NOT NULL DEFAULT 0,
+            cpcb_error TEXT,
+            openaq_status TEXT NOT NULL,
             openaq_observations_ingested INTEGER NOT NULL DEFAULT 0,
-            daily_district_records_updated INTEGER NOT NULL DEFAULT 0,
-            error_summary TEXT
+            openaq_error TEXT,
+            daily_district_records_updated INTEGER NOT NULL DEFAULT 0
         );
         """,
     ),
@@ -186,6 +190,7 @@ def upsert_districts(conn: sqlite3.Connection, districts: Iterable[District]) ->
 
 
 def upsert_stations(conn: sqlite3.Connection, stations: Iterable[StationRecord]) -> None:
+    """Upsert station metadata while preserving any previously discovered openaq_location_id."""
     for s in stations:
         conn.execute(
             """
@@ -209,8 +214,11 @@ def upsert_stations(conn: sqlite3.Connection, stations: Iterable[StationRecord])
                 expected_pollutants_json = excluded.expected_pollutants_json,
                 is_verified_member = excluded.is_verified_member,
                 membership_basis = excluded.membership_basis,
-                openaq_location_id = excluded.openaq_location_id,
-                openaq_verified_available = excluded.openaq_verified_available
+                openaq_location_id = COALESCE(excluded.openaq_location_id, stations.openaq_location_id),
+                openaq_verified_available = CASE
+                    WHEN excluded.openaq_location_id IS NOT NULL THEN excluded.openaq_verified_available
+                    ELSE stations.openaq_verified_available
+                END
             """,
             (
                 s.station_id,
@@ -230,6 +238,82 @@ def upsert_stations(conn: sqlite3.Connection, stations: Iterable[StationRecord])
                 1 if s.openaq_verified_available else 0,
             ),
         )
+
+
+def update_station_openaq_mapping(
+    conn: sqlite3.Connection,
+    station_id: str,
+    openaq_location_id: Optional[int],
+    openaq_verified_available: bool,
+) -> None:
+    """Persist a discovered or validated OpenAQ location ID onto a station record."""
+    conn.execute(
+        """
+        UPDATE stations
+        SET openaq_location_id = COALESCE(?, openaq_location_id),
+            openaq_verified_available = ?
+        WHERE station_id = ?
+        """,
+        (openaq_location_id, 1 if openaq_verified_available else 0, station_id),
+    )
+
+
+def load_stations_from_db(
+    conn: sqlite3.Connection,
+    *,
+    district_id: Optional[str] = None,
+    verified_only: bool = True,
+) -> List[StationRecord]:
+    """Load StationRecord rows from SQLite (including persisted OpenAQ location IDs)."""
+    clauses = []
+    params: List[object] = []
+    if district_id is not None:
+        clauses.append("district_id = ?")
+        params.append(district_id)
+    if verified_only:
+        clauses.append("is_verified_member = 1")
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        f"SELECT * FROM stations {where_sql} ORDER BY station_id ASC",
+        tuple(params),
+    ).fetchall()
+    return [
+        StationRecord(
+            station_id=r["station_id"],
+            district_id=r["district_id"],
+            source_provider=r["source_provider"],
+            external_station_id=r["external_station_id"],
+            station_name=r["station_name"],
+            operating_agency=r["operating_agency"],
+            city=r["city"],
+            state=r["state"],
+            lat=float(r["lat"]) if r["lat"] is not None else None,
+            lon=float(r["lon"]) if r["lon"] is not None else None,
+            expected_pollutants=json.loads(r["expected_pollutants_json"]),
+            is_verified_member=bool(r["is_verified_member"]),
+            membership_basis=r["membership_basis"],
+            openaq_location_id=int(r["openaq_location_id"]) if r["openaq_location_id"] is not None else None,
+            openaq_verified_available=bool(r["openaq_verified_available"]),
+        )
+        for r in rows
+    ]
+
+
+def get_latest_station_observation_time(
+    conn: sqlite3.Connection,
+    station_id: str,
+    source_provider: str,
+) -> Optional[str]:
+    """Return the latest valid observed_at_utc timestamp for a station and source_provider."""
+    row = conn.execute(
+        """
+        SELECT MAX(observed_at_utc) AS max_obs
+        FROM raw_station_observations
+        WHERE station_id = ? AND source_provider = ? AND is_valid = 1
+        """,
+        (station_id, source_provider),
+    ).fetchone()
+    return row["max_obs"] if row and row["max_obs"] else None
 
 
 def insert_raw_observations(
@@ -384,4 +468,31 @@ def upsert_daily_district_history(
             record.pollutants_json,
             record.caveats_json,
         ),
+    )
+
+
+def get_latest_sync_run(conn: sqlite3.Connection) -> Optional[SyncRunRecord]:
+    """Return the most recent row from ingestion_sync_runs, or None if no sync has run."""
+    tbl = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='ingestion_sync_runs'"
+    ).fetchone()
+    if not tbl:
+        return None
+    row = conn.execute(
+        "SELECT * FROM ingestion_sync_runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if not row:
+        return None
+    return SyncRunRecord(
+        id=int(row["id"]),
+        started_at_utc=row["started_at_utc"],
+        completed_at_utc=row["completed_at_utc"],
+        overall_status=row["overall_status"],
+        cpcb_status=row["cpcb_status"],
+        cpcb_observations_ingested=int(row["cpcb_observations_ingested"]),
+        cpcb_error=row["cpcb_error"],
+        openaq_status=row["openaq_status"],
+        openaq_observations_ingested=int(row["openaq_observations_ingested"]),
+        openaq_error=row["openaq_error"],
+        daily_district_records_updated=int(row["daily_district_records_updated"]),
     )

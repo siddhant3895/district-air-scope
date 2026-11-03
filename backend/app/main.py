@@ -4,7 +4,9 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router as api_router
+from app.cli import seed_registry
 from app.config import get_settings
+from app.database import get_db_connection
 
 
 def create_app() -> FastAPI:
@@ -22,6 +24,11 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "OPTIONS"],
         allow_headers=["*"],
     )
+
+    @app.on_event("startup")
+    def _initialize_database_on_startup() -> None:
+        with get_db_connection() as conn:
+            seed_registry(conn)
 
     app.include_router(api_router)
     return app

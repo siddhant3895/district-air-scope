@@ -1,9 +1,9 @@
-"""HTTP API endpoints backed by SQLite persistence (read-only public surface)."""
+"""HTTP API endpoints backed by SQLite persistence (strictly read-only public surface; no reseeding on GET)."""
 from __future__ import annotations
 
-from typing import List, Optional
+import sqlite3
+from typing import Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
-from app.cli import seed_registry
 from app.config import get_settings
 from app.database import get_db_connection
 from app.districts_registry import (
@@ -11,17 +11,28 @@ from app.districts_registry import (
     list_target_districts,
     list_verified_stations_for_district,
 )
+from app.migrations import get_latest_sync_run
 from app.models import DailyDistrictHistoryRecord
-from app.schemas import District, DistrictSnapshot, HealthResponse
+from app.schemas import District, DistrictSnapshot, HealthResponse, ProviderHealthStatus
 from app.services.aggregator import build_snapshot_from_daily_history
 from app.services.quality import is_reading_stale
 
 router = APIRouter(prefix="/api", tags=["air-quality"])
 
 
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
 def _load_district_history_from_db(district_id: str) -> List[DailyDistrictHistoryRecord]:
+    """Load daily district history rows without mutating or reseeding the database."""
     with get_db_connection() as conn:
-        seed_registry(conn)
+        if not _table_exists(conn, "daily_district_history"):
+            return []
         rows = conn.execute(
             """
             SELECT * FROM daily_district_history
@@ -49,31 +60,6 @@ def _load_district_history_from_db(district_id: str) -> List[DailyDistrictHistor
             )
             for r in rows
         ]
-
-
-def _get_health_status() -> tuple[Optional[str], bool]:
-    """Return (last_ingested_at_utc, live_data_ready)."""
-    settings = get_settings()
-    with get_db_connection() as conn:
-        seed_registry(conn)
-        obs_row = conn.execute(
-            "SELECT MAX(ingested_at_utc) AS last_ingested FROM raw_station_observations WHERE is_valid = 1"
-        ).fetchone()
-        last_ingested = obs_row["last_ingested"] if obs_row and obs_row["last_ingested"] else None
-
-        hist_row = conn.execute(
-            "SELECT MAX(updated_at_utc) AS latest_updated FROM daily_district_history WHERE district_aqi IS NOT NULL"
-        ).fetchone()
-        latest_updated = hist_row["latest_updated"] if hist_row and hist_row["latest_updated"] else None
-
-    has_keys = settings.cpcb_configured or settings.openaq_configured
-    has_fresh_reading = bool(
-        latest_updated
-        and not is_reading_stale(
-            latest_updated, stale_threshold_hours=settings.stale_threshold_hours
-        )
-    )
-    return last_ingested, (has_keys and has_fresh_reading)
 
 
 def _filter_districts(
@@ -115,17 +101,114 @@ def _build_snapshot_for_district(
 
 @router.get("/health", response_model=HealthResponse)
 def get_health() -> HealthResponse:
+    """Return pipeline health, per-provider status, and data freshness without mutating DB state."""
     settings = get_settings()
     districts = list_target_districts()
-    last_ingested, live_ready = _get_health_status()
+    last_ingested: Optional[str] = None
+    last_sync_status = "never_run"
+    fresh_districts_count = 0
+
+    cpcb_last_obs: Optional[str] = None
+    openaq_last_obs: Optional[str] = None
+    cpcb_sync_status = "not_configured" if not settings.cpcb_configured else "never_run"
+    openaq_sync_status = "not_configured" if not settings.openaq_configured else "never_run"
+    cpcb_sync_err: Optional[str] = None
+    openaq_sync_err: Optional[str] = None
+
+    with get_db_connection() as conn:
+        if _table_exists(conn, "raw_station_observations"):
+            row_all = conn.execute(
+                "SELECT MAX(ingested_at_utc) AS last_ingested FROM raw_station_observations WHERE is_valid = 1"
+            ).fetchone()
+            if row_all and row_all["last_ingested"]:
+                last_ingested = row_all["last_ingested"]
+
+            row_cpcb = conn.execute(
+                "SELECT MAX(observed_at_utc) AS max_obs FROM raw_station_observations WHERE source_provider = 'cpcb_ogd' AND is_valid = 1"
+            ).fetchone()
+            if row_cpcb and row_cpcb["max_obs"]:
+                cpcb_last_obs = row_cpcb["max_obs"]
+
+            row_oaq = conn.execute(
+                "SELECT MAX(observed_at_utc) AS max_obs FROM raw_station_observations WHERE source_provider = 'openaq_v3' AND is_valid = 1"
+            ).fetchone()
+            if row_oaq and row_oaq["max_obs"]:
+                openaq_last_obs = row_oaq["max_obs"]
+
+        if _table_exists(conn, "daily_district_history"):
+            rows_hist = conn.execute(
+                """
+                SELECT district_id, MAX(date) AS latest_date, updated_at_utc, district_aqi
+                FROM daily_district_history
+                WHERE district_aqi IS NOT NULL
+                GROUP BY district_id
+                """
+            ).fetchall()
+            for r in rows_hist:
+                upd = r["updated_at_utc"]
+                if upd and not is_reading_stale(
+                    upd, stale_threshold_hours=settings.stale_threshold_hours
+                ):
+                    fresh_districts_count += 1
+
+        sync_run = get_latest_sync_run(conn)
+        if sync_run is not None:
+            last_sync_status = sync_run.overall_status
+            cpcb_sync_status = sync_run.cpcb_status
+            cpcb_sync_err = sync_run.cpcb_error
+            openaq_sync_status = sync_run.openaq_status
+            openaq_sync_err = sync_run.openaq_error
+
+    cpcb_fresh = bool(
+        cpcb_last_obs
+        and not is_reading_stale(
+            cpcb_last_obs, stale_threshold_hours=settings.stale_threshold_hours
+        )
+    )
+    openaq_fresh = bool(
+        openaq_last_obs
+        and not is_reading_stale(
+            openaq_last_obs, stale_threshold_hours=settings.stale_threshold_hours
+        )
+    )
+
+    providers: Dict[str, ProviderHealthStatus] = {
+        "cpcb_ogd": ProviderHealthStatus(
+            configured=settings.cpcb_configured,
+            lastSyncStatus=cpcb_sync_status,
+            lastSyncError=cpcb_sync_err,
+            lastObservationAt=cpcb_last_obs,
+            hasFreshData=cpcb_fresh,
+        ),
+        "openaq_v3": ProviderHealthStatus(
+            configured=settings.openaq_configured,
+            lastSyncStatus=openaq_sync_status,
+            lastSyncError=openaq_sync_err,
+            lastObservationAt=openaq_last_obs,
+            hasFreshData=openaq_fresh,
+        ),
+    }
+
+    # liveDataReady is True ONLY when:
+    # 1. At least one configured provider has fresh valid observations and has not failed its latest sync, AND
+    # 2. At least one district has a fresh, non-stale daily AQI evaluation.
+    any_provider_healthy = any(
+        p.configured and p.lastSyncStatus in ("succeeded", "never_run") and p.hasFreshData
+        for p in providers.values()
+    )
+    live_data_ready = bool(any_provider_healthy and fresh_districts_count > 0)
+
     return HealthResponse(
         status="ok",
         phase="phase_3_nationwide_development",
-        liveDataReady=live_ready,
+        liveDataReady=live_data_ready,
         cpcbKeyConfigured=settings.cpcb_configured,
         openaqKeyConfigured=settings.openaq_configured,
         districtsTracked=len(districts),
         lastIngestedAt=last_ingested,
+        lastSyncStatus=last_sync_status,
+        freshDistrictsCount=fresh_districts_count,
+        providers=providers,
     )
 
 
@@ -134,14 +217,12 @@ def list_districts(
     state: Optional[str] = Query(None, description="Optional state/UT name filter"),
     q: Optional[str] = Query(None, description="Optional search query on district or state name"),
 ) -> List[District]:
-    with get_db_connection() as conn:
-        seed_registry(conn)
     return _filter_districts(list_target_districts(), state=state, q=q)
 
 
 @router.get("/snapshots", response_model=List[DistrictSnapshot])
 def list_snapshots(
-    anchor_date: Optional[str] = Query(None, description="Optional YYYY-MM-DD evaluation date"),
+    anchor_date: Optional[str] = Query(None, description="Optional YYYY-MM-DD evaluation date in IST"),
     state: Optional[str] = Query(None, description="Optional state/UT name filter"),
     q: Optional[str] = Query(None, description="Optional search query on district or state name"),
 ) -> List[DistrictSnapshot]:
@@ -152,7 +233,7 @@ def list_snapshots(
 @router.get("/snapshots/{district_id}", response_model=DistrictSnapshot)
 def get_snapshot(
     district_id: str,
-    anchor_date: Optional[str] = Query(None, description="Optional YYYY-MM-DD evaluation date"),
+    anchor_date: Optional[str] = Query(None, description="Optional YYYY-MM-DD evaluation date in IST"),
 ) -> DistrictSnapshot:
     mapping = get_district_mapping(district_id)
     if mapping is None:

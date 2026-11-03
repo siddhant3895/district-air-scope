@@ -41,7 +41,8 @@ class TestStage6EndToEndAndSecurity(unittest.TestCase):
     def test_end_to_end_sqlite_ingestion_to_api_snapshot_with_null_history_gaps(self) -> None:
         """Verify hourly observations in SQLite recompute into 30-day history with missing days preserved as null."""
         stations = list_verified_stations_for_district("lucknow")
-        eval_day = datetime(2026, 11, 2, 23, 0, 0, tzinfo=timezone.utc)
+        ist_tz = timezone(timedelta(hours=5, minutes=30))
+        eval_day = datetime(2026, 11, 2, 23, 0, 0, tzinfo=ist_tz).astimezone(timezone.utc)
 
         # Populate 24 hours of valid observations for 3 stations in Lucknow on 2026-11-02,
         # while leaving 2026-11-01 and earlier days empty to verify null gap preservation.
