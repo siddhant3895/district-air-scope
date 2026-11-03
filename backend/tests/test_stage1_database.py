@@ -24,7 +24,7 @@ class TestStage1DatabaseAndMigrations(unittest.TestCase):
 
     def test_idempotent_migrations_and_table_creation(self) -> None:
         applied_first = run_migrations(self.conn)
-        self.assertEqual(applied_first, [1])
+        self.assertEqual(applied_first, [1, 2])
 
         # Second run is a no-op
         applied_second = run_migrations(self.conn)
@@ -44,6 +44,7 @@ class TestStage1DatabaseAndMigrations(unittest.TestCase):
                 "raw_station_observations",
                 "station_aqi_evaluations",
                 "daily_district_history",
+                "ingestion_sync_runs",
             }.issubset(tables)
         )
 

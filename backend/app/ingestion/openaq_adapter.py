@@ -266,3 +266,28 @@ def fetch_openaq_sensor_hours(
         )
         resp.raise_for_status()
         return resp.json()
+
+
+def discover_openaq_locations_near_coordinates(
+    api_key: str,
+    *,
+    lat: float,
+    lon: float,
+    radius_meters: int = 2500,
+    limit: int = 10,
+    timeout_sec: float = 20.0,
+) -> Dict[str, Any]:
+    """Discover OpenAQ v3 reference locations within `radius_meters` of a verified station's coordinates."""
+    if not api_key or not api_key.strip():
+        raise ValueError("OPENAQ_API_KEY is required to query OpenAQ v3.")
+    headers = {"X-API-Key": api_key.strip(), "Accept": "application/json"}
+    params: Dict[str, Any] = {
+        "coordinates": f"{lat:.4f},{lon:.4f}",
+        "radius": min(25000, max(100, radius_meters)),
+        "iso": "IN",
+        "limit": min(100, max(1, limit)),
+    }
+    with httpx.Client(timeout=timeout_sec) as client:
+        resp = client.get(f"{OPENAQ_V3_BASE_URL}/locations", headers=headers, params=params)
+        resp.raise_for_status()
+        return resp.json()

@@ -119,6 +119,22 @@ MIGRATIONS: Tuple[Tuple[int, str, str], ...] = (
         );
         """,
     ),
+    (
+        2,
+        "002_ingestion_sync_runs",
+        """
+        CREATE TABLE IF NOT EXISTS ingestion_sync_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at_utc TEXT NOT NULL,
+            completed_at_utc TEXT,
+            status TEXT NOT NULL,
+            cpcb_observations_ingested INTEGER NOT NULL DEFAULT 0,
+            openaq_observations_ingested INTEGER NOT NULL DEFAULT 0,
+            daily_district_records_updated INTEGER NOT NULL DEFAULT 0,
+            error_summary TEXT
+        );
+        """,
+    ),
 )
 
 

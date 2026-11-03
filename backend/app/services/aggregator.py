@@ -86,14 +86,19 @@ def evaluate_station_window(
     for obs in observations:
         if obs.station_id != station.station_id or not obs.is_valid:
             continue
-        if obs.window_hours != 1:
-            # Only hourly observations can satisfy the 16-hour completeness check
+        # Accept 1-hour observations (OpenAQ) as well as hourly CPCB OGD station polls
+        # (each distinct hourly poll timestamp occupies at most 1 hour bucket in `by_pollutant`,
+        # so 16+ distinct hourly polls in a 24h window are still strictly required to pass completeness).
+        if obs.window_hours not in (1, 8, 24):
             continue
         dt = _parse_utc(obs.observed_at_utc)
         if not (window_24h_start < dt <= evaluation_end_utc):
             continue
         hour_bucket = dt.strftime("%Y-%m-%dT%H:00:00Z")
-        by_pollutant[obs.pollutant_key][hour_bucket] = obs
+        # Prefer 1-hour concentration observations if both exist for the same hour bucket
+        existing = by_pollutant[obs.pollutant_key].get(hour_bucket)
+        if existing is None or (existing.window_hours != 1 and obs.window_hours == 1):
+            by_pollutant[obs.pollutant_key][hour_bucket] = obs
 
     pollutant_evals: Dict[PollutantKey, StationPollutantEvaluation] = {}
     observed_total_hours = 0

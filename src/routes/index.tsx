@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { airQuality } from "@/data";
+import { airQuality, DATA_IS_ILLUSTRATIVE } from "@/data";
 import { AppShell } from "@/components/dw/AppShell";
 import { AqiSummaryCard } from "@/components/dw/AqiSummaryCard";
 import { TrendChart } from "@/components/dw/TrendChart";
@@ -60,7 +60,7 @@ function Overview() {
               </li>
             ))}
           </ul>
-          <p className="mt-auto pt-6 text-xs text-muted-foreground">Illustrative data — not live measurements.</p>
+          <p className="mt-auto pt-6 text-xs text-muted-foreground">{DATA_IS_ILLUSTRATIVE ? "Illustrative data — not live measurements." : "Station-first CPCB NAQI · 16h completeness window."}</p>
         </aside>
       </div>
 

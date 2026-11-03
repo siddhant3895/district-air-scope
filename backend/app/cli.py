@@ -21,6 +21,7 @@ from app.districts_registry import (
 )
 from app.ingestion.cpcb_adapter import fetch_cpcb_ogd_page, parse_cpcb_ogd_payload
 from app.ingestion.openaq_adapter import (
+    discover_openaq_locations_near_coordinates,
     fetch_openaq_location,
     fetch_openaq_sensor_hours,
     parse_openaq_hourly_payload,
@@ -108,9 +109,16 @@ def recompute_district_history_window(
 
         for day_offset in range(days):
             target_date = ref_date - timedelta(days=days - 1 - day_offset)
-            eval_end = datetime(
-                target_date.year, target_date.month, target_date.day, 23, 59, 59, tzinfo=timezone.utc
-            )
+            day_start_iso = f"{target_date.isoformat()}T00:00:00Z"
+            day_end_iso = f"{target_date.isoformat()}T23:59:59Z"
+
+            # Check if any observations were recorded on target_date, and anchor the rolling 24h window
+            # to the latest observation timestamp on target_date (per CPCB's 6am-to-6am rolling 24h rule).
+            day_obs = load_station_observations(conn, station_ids, day_start_iso, day_end_iso)
+            if not day_obs:
+                continue
+            latest_on_day_str = max(o.observed_at_utc for o in day_obs)
+            eval_end = datetime.fromisoformat(latest_on_day_str.replace("Z", "+00:00")).astimezone(timezone.utc)
             eval_start = eval_end - timedelta(hours=24)
 
             obs = load_station_observations(
@@ -168,68 +176,127 @@ def recompute_district_history_window(
 
 
 def run_sync(database_url: Optional[str] = None, days: int = 30) -> Dict[str, int]:
-    """Run a local CLI ingestion sync from configured CPCB and OpenAQ adapters."""
+    """Run a local CLI ingestion sync from configured CPCB and OpenAQ adapters with audit logging."""
     settings = get_settings()
     summary = {
         "cpcb_observations_ingested": 0,
         "openaq_observations_ingested": 0,
         "daily_district_records_updated": 0,
     }
+    started_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     with get_db_connection(database_url) as conn:
         seed_registry(conn)
-
-        if settings.cpcb_configured:
-            for entry in TARGET_DISTRICTS:
-                for city in entry.cpcb_cities:
-                    payload = fetch_cpcb_ogd_page(
-                        settings.data_gov_in_api_key,
-                        state=entry.cpcb_state,
-                        city=city,
-                    )
-                    report = parse_cpcb_ogd_payload(payload)
-                    summary["cpcb_observations_ingested"] += insert_raw_observations(
-                        conn, report.accepted_observations
-                    )
-
-        if settings.openaq_configured:
-            now_utc = datetime.now(timezone.utc)
-            start_utc = (now_utc - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            end_utc = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-            for st in REVIEWED_STATIONS:
-                if not st.is_verified_member or st.openaq_location_id is None:
-                    continue
-                loc_payload = fetch_openaq_location(
-                    settings.openaq_api_key, st.openaq_location_id
-                )
-                results = loc_payload.get("results") or []
-                if not results:
-                    continue
-                val_res = validate_openaq_location(results[0], reference_now_utc=now_utc)
-                if not val_res.is_available:
-                    continue
-
-                for pollutant_key, sensor in val_res.valid_sensors.items():
-                    hours_payload = fetch_openaq_sensor_hours(
-                        settings.openaq_api_key,
-                        sensor.sensor_id,
-                        datetime_from_utc=start_utc,
-                        datetime_to_utc=end_utc,
-                    )
-                    hourly_obs = parse_openaq_hourly_payload(
-                        station_id=st.station_id,
-                        sensor_id=sensor.sensor_id,
-                        expected_pollutant=pollutant_key,
-                        payload=hours_payload,
-                    )
-                    summary["openaq_observations_ingested"] += insert_raw_observations(
-                        conn, hourly_obs
-                    )
-
-        summary["daily_district_records_updated"] = recompute_district_history_window(
-            conn, days=days
+        cur = conn.execute(
+            """
+            INSERT INTO ingestion_sync_runs (started_at_utc, status)
+            VALUES (?, 'running')
+            """,
+            (started_iso,),
         )
+        run_id = cur.lastrowid
+
+        try:
+            if settings.cpcb_configured:
+                for entry in TARGET_DISTRICTS:
+                    for city in entry.cpcb_cities:
+                        payload = fetch_cpcb_ogd_page(
+                            settings.data_gov_in_api_key,
+                            state=entry.cpcb_state,
+                            city=city,
+                        )
+                        report = parse_cpcb_ogd_payload(payload)
+                        summary["cpcb_observations_ingested"] += insert_raw_observations(
+                            conn, report.accepted_observations
+                        )
+
+            if settings.openaq_configured:
+                now_utc = datetime.now(timezone.utc)
+                start_utc = (now_utc - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                end_utc = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                for st in REVIEWED_STATIONS:
+                    if not st.is_verified_member:
+                        continue
+                    loc_obj = None
+                    if st.openaq_location_id is not None:
+                        loc_payload = fetch_openaq_location(
+                            settings.openaq_api_key, st.openaq_location_id
+                        )
+                        results = loc_payload.get("results") or []
+                        if results:
+                            loc_obj = results[0]
+                    elif st.lat is not None and st.lon is not None:
+                        near_payload = discover_openaq_locations_near_coordinates(
+                            settings.openaq_api_key, lat=st.lat, lon=st.lon, radius_meters=2500
+                        )
+                        for cand in near_payload.get("results") or []:
+                            cand_val = validate_openaq_location(cand, reference_now_utc=now_utc)
+                            if cand_val.is_available:
+                                loc_obj = cand
+                                conn.execute(
+                                    "UPDATE stations SET openaq_location_id = ?, openaq_verified_available = 1 WHERE station_id = ?",
+                                    (cand_val.location_id, st.station_id),
+                                )
+                                break
+
+                    if loc_obj is None:
+                        continue
+                    val_res = validate_openaq_location(loc_obj, reference_now_utc=now_utc)
+                    if not val_res.is_available:
+                        continue
+
+                    for pollutant_key, sensor in val_res.valid_sensors.items():
+                        hours_payload = fetch_openaq_sensor_hours(
+                            settings.openaq_api_key,
+                            sensor.sensor_id,
+                            datetime_from_utc=start_utc,
+                            datetime_to_utc=end_utc,
+                        )
+                        hourly_obs = parse_openaq_hourly_payload(
+                            station_id=st.station_id,
+                            sensor_id=sensor.sensor_id,
+                            expected_pollutant=pollutant_key,
+                            payload=hours_payload,
+                        )
+                        summary["openaq_observations_ingested"] += insert_raw_observations(
+                            conn, hourly_obs
+                        )
+
+            summary["daily_district_records_updated"] = recompute_district_history_window(
+                conn, days=days
+            )
+            completed_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            conn.execute(
+                """
+                UPDATE ingestion_sync_runs
+                SET completed_at_utc = ?,
+                    status = 'succeeded',
+                    cpcb_observations_ingested = ?,
+                    openaq_observations_ingested = ?,
+                    daily_district_records_updated = ?
+                WHERE id = ?
+                """,
+                (
+                    completed_iso,
+                    summary["cpcb_observations_ingested"],
+                    summary["openaq_observations_ingested"],
+                    summary["daily_district_records_updated"],
+                    run_id,
+                ),
+            )
+        except Exception as exc:
+            completed_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            conn.execute(
+                """
+                UPDATE ingestion_sync_runs
+                SET completed_at_utc = ?, status = 'failed', error_summary = ?
+                WHERE id = ?
+                """,
+                (completed_iso, str(exc), run_id),
+            )
+            conn.commit()
+            raise
 
     return summary
 
