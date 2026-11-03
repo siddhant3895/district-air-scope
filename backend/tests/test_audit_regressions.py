@@ -1513,5 +1513,500 @@ class TestLegacyUnverifiedCpcbMigrationAndRecomputation(unittest.TestCase):
             self.assertEqual(sep1_after_30d_recompute["district_aqi"], 100)
 
 
+
+    def test_two_stations_in_same_district_with_different_cpcb_validity(self) -> None:
+        """Verify station-level preservation: valid explicit-unit station is preserved while unitless/unbacked stations in same district are invalidated."""
+        from app.migrations import (
+            MIGRATIONS,
+            run_migrations,
+            upsert_daily_district_history,
+            upsert_districts,
+            upsert_station_evaluation,
+            upsert_stations,
+        )
+        from app.models import DailyDistrictHistoryRecord
+        from app.districts_registry import list_target_districts, REVIEWED_STATIONS
+
+        with get_db_connection() as conn:
+            for version, name, sql in MIGRATIONS[:2]:
+                conn.executescript(sql)
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at_utc) VALUES (?, ?, ?)",
+                    (version, name, "2026-09-01T00:00:00Z"),
+                )
+            upsert_districts(conn, list_target_districts())
+            upsert_stations(conn, REVIEWED_STATIONS)
+
+            delhi_stations = list_verified_stations_for_district("new-delhi")
+            st_valid = delhi_stations[0]      # Mandir Marg: backed by explicit physical units (µg/m³) -> AQI 100
+            st_unitless = delhi_stations[1]   # R K Puram: backed by unitless ('NA') CPCB rows -> AQI 220 (must invalidate)
+            st_unbacked = delhi_stations[2]   # Punjabi Bagh: unbacked evaluation row with 0 valid CPCB rows -> AQI 260 (must invalidate)
+
+            eval_dt = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
+            obs = []
+            for h in range(18):
+                ts = (eval_dt - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                for p_key, conc, sub_i in [("PM2.5", 60.0, 100), ("PM10", 100.0, 100), ("NO2", 40.0, 50)]:
+                    obs.append(
+                        RawStationObservation(
+                            station_id=st_valid.station_id,
+                            source_provider="cpcb_ogd",
+                            upstream_sensor_or_record_id=f"valid:{p_key}:{ts}",
+                            pollutant_key=p_key,  # type: ignore[arg-type]
+                            observed_at_utc=ts,
+                            window_hours=1,
+                            raw_value_text=str(conc),
+                            raw_unit="µg/m³",
+                            value_kind="concentration",
+                            normalized_concentration=conc,
+                            normalized_unit="µg/m³",
+                            calculated_sub_index=sub_i,
+                            is_valid=True,
+                            validation_note="Verified µg/m³",
+                            raw_payload_json="{}",
+                            ingested_at_utc=ts,
+                        )
+                    )
+                    obs.append(
+                        RawStationObservation(
+                            station_id=st_unitless.station_id,
+                            source_provider="cpcb_ogd",
+                            upstream_sensor_or_record_id=f"unitless:{p_key}:{ts}",
+                            pollutant_key=p_key,  # type: ignore[arg-type]
+                            observed_at_utc=ts,
+                            window_hours=24,
+                            raw_value_text="220",
+                            raw_unit="NA",
+                            value_kind="sub_index",
+                            normalized_concentration=None,
+                            normalized_unit=None,
+                            calculated_sub_index=220,
+                            is_valid=True,
+                            validation_note="Legacy unitless CPCB",
+                            raw_payload_json="{}",
+                            ingested_at_utc=ts,
+                        )
+                    )
+            insert_raw_observations(conn, obs)
+
+            ev_valid = evaluate_station_window(
+                station=st_valid,
+                observations=[o for o in obs if o.station_id == st_valid.station_id],
+                evaluation_end_utc=eval_dt,
+            )
+            ev_unitless = evaluate_station_window(
+                station=st_unitless,
+                observations=[o for o in obs if o.station_id == st_unitless.station_id],
+                evaluation_end_utc=eval_dt,
+            )
+            upsert_station_evaluation(conn, ev_valid)
+            upsert_station_evaluation(conn, ev_unitless)
+
+            # Also insert an unbacked CPCB station evaluation for st_unbacked in the same district
+            conn.execute(
+                """
+                INSERT INTO station_aqi_evaluations (
+                    station_id, district_id, evaluation_timestamp_utc, evaluation_date,
+                    source_provider, station_aqi, dominant_pollutant,
+                    meets_16h_completeness, meets_3_pollutant_pm_rule, is_valid_station_aqi,
+                    valid_pollutant_count, observed_pollutant_hours, expected_pollutant_hours,
+                    pollutants_json, rejection_reasons_json
+                )
+                VALUES (?, 'new-delhi', '2026-09-10T12:00:00Z', '2026-09-10', 'cpcb_ogd', 260, 'PM2.5', 1, 1, 1, 3, 54, 112, '{}', '[]')
+                """,
+                (st_unbacked.station_id,),
+            )
+
+            # Pre-migration district history had mean of (100, 220, 260) = 193 across 3 reporting stations
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="new-delhi",
+                    date="2026-09-10",
+                    district_aqi=193,
+                    dominant_pollutant="PM2.5",
+                    updated_at_utc="2026-09-10T12:00:00Z",
+                    source_attribution="CPCB / SPCB CAAQMS via data.gov.in (GODL-India)",
+                    reporting_stations=3,
+                    registered_stations=6,
+                    observed_station_pollutant_hours=162,
+                    expected_station_pollutant_hours=672,
+                    coverage=round(162 / 672, 4),
+                    quality="medium",
+                    pollutants_json='[{"key":"PM2.5","value":60.0,"unit":"µg/m³","subIndex":193}]',
+                    caveats_json="[]",
+                ),
+            )
+            conn.commit()
+
+            # Run Migration 003
+            self.assertEqual(run_migrations(conn), [3])
+
+            # 1. st_valid (Mandir Marg) MUST remain valid at AQI=100
+            row_valid = conn.execute(
+                "SELECT station_aqi, is_valid_station_aqi FROM station_aqi_evaluations WHERE station_id = ? AND evaluation_date = '2026-09-10'",
+                (st_valid.station_id,),
+            ).fetchone()
+            self.assertEqual(row_valid["station_aqi"], 100)
+            self.assertEqual(row_valid["is_valid_station_aqi"], 1)
+
+            # 2. st_unitless (R K Puram) MUST be invalidated
+            row_unitless = conn.execute(
+                "SELECT station_aqi, is_valid_station_aqi FROM station_aqi_evaluations WHERE station_id = ? AND evaluation_date = '2026-09-10'",
+                (st_unitless.station_id,),
+            ).fetchone()
+            self.assertIsNone(row_unitless["station_aqi"])
+            self.assertEqual(row_unitless["is_valid_station_aqi"], 0)
+
+            # 3. st_unbacked (Punjabi Bagh) MUST ALSO be invalidated (not masked by Mandir Marg's valid CPCB data!)
+            row_unbacked = conn.execute(
+                "SELECT station_aqi, is_valid_station_aqi FROM station_aqi_evaluations WHERE station_id = ? AND evaluation_date = '2026-09-10'",
+                (st_unbacked.station_id,),
+            ).fetchone()
+            self.assertIsNone(row_unbacked["station_aqi"])
+            self.assertEqual(row_unbacked["is_valid_station_aqi"], 0)
+
+            # 4. District history for new-delhi on 2026-09-10 MUST be re-aggregated to AQI=100 with reporting_stations=1
+            daily_row = conn.execute(
+                "SELECT district_aqi, reporting_stations, source_attribution FROM daily_district_history WHERE district_id = 'new-delhi' AND date = '2026-09-10'"
+            ).fetchone()
+            self.assertEqual(daily_row["district_aqi"], 100)
+            self.assertEqual(daily_row["reporting_stations"], 1)
+            self.assertEqual(daily_row["source_attribution"], "CPCB / SPCB CAAQMS via data.gov.in (GODL-India)")
+
+    def test_unitless_cpcb_observations_outside_24h_evaluation_window_do_not_corrupt_reconciliation(self) -> None:
+        """Verify out-of-window unitless CPCB rows do not invalidate valid evaluations, and out-of-window valid rows do not suppress invalidation."""
+        from app.migrations import (
+            MIGRATIONS,
+            run_migrations,
+            upsert_daily_district_history,
+            upsert_districts,
+            upsert_station_evaluation,
+            upsert_stations,
+        )
+        from app.models import DailyDistrictHistoryRecord
+        from app.districts_registry import list_target_districts, REVIEWED_STATIONS
+
+        with get_db_connection() as conn:
+            for version, name, sql in MIGRATIONS[:2]:
+                conn.executescript(sql)
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at_utc) VALUES (?, ?, ?)",
+                    (version, name, "2026-09-01T00:00:00Z"),
+                )
+            upsert_districts(conn, list_target_districts())
+            upsert_stations(conn, REVIEWED_STATIONS)
+
+            kol_st = list_verified_stations_for_district("kolkata")[0]
+
+            # Subcase A (2026-09-15, evaluation anchored at 2026-09-15T10:00:00Z -> window (2026-09-14T10:00:00Z, 2026-09-15T10:00:00Z]):
+            # Has 3 explicit-unit CPCB observations inside the window + a stored valid evaluation (AQI=100),
+            # AND has unrelated unitless CPCB observations OUTSIDE the window at 2026-09-14T09:00:00Z (before window)
+            # and 2026-09-15T14:00:00Z (after evaluation_timestamp_utc on the same IST date).
+            insert_raw_observations(
+                conn,
+                [
+                    RawStationObservation(
+                        station_id=kol_st.station_id,
+                        source_provider="cpcb_ogd",
+                        upstream_sensor_or_record_id="in_win_valid_pm25",
+                        pollutant_key="PM2.5",
+                        observed_at_utc="2026-09-15T10:00:00Z",
+                        window_hours=1,
+                        raw_value_text="60.0",
+                        raw_unit="µg/m³",
+                        value_kind="concentration",
+                        normalized_concentration=60.0,
+                        normalized_unit="µg/m³",
+                        calculated_sub_index=100,
+                        is_valid=True,
+                        validation_note="Verified µg/m³",
+                        raw_payload_json="{}",
+                        ingested_at_utc="2026-09-15T10:00:00Z",
+                    ),
+                    # Out-of-window unitless observation 1h BEFORE window start (2026-09-14T09:00:00Z <= 2026-09-14T10:00:00Z)
+                    RawStationObservation(
+                        station_id=kol_st.station_id,
+                        source_provider="cpcb_ogd",
+                        upstream_sensor_or_record_id="out_of_win_before",
+                        pollutant_key="PM2.5",
+                        observed_at_utc="2026-09-14T09:00:00Z",
+                        window_hours=24,
+                        raw_value_text="250",
+                        raw_unit="NA",
+                        value_kind="sub_index",
+                        normalized_concentration=None,
+                        normalized_unit=None,
+                        calculated_sub_index=250,
+                        is_valid=True,
+                        validation_note="Legacy unitless before window",
+                        raw_payload_json="{}",
+                        ingested_at_utc="2026-09-14T09:00:00Z",
+                    ),
+                    # Out-of-window unitless observation 4h AFTER evaluation_timestamp_utc (2026-09-15T14:00:00Z > 2026-09-15T10:00:00Z)
+                    RawStationObservation(
+                        station_id=kol_st.station_id,
+                        source_provider="cpcb_ogd",
+                        upstream_sensor_or_record_id="out_of_win_after",
+                        pollutant_key="PM2.5",
+                        observed_at_utc="2026-09-15T14:00:00Z",
+                        window_hours=24,
+                        raw_value_text="260",
+                        raw_unit="NA",
+                        value_kind="sub_index",
+                        normalized_concentration=None,
+                        normalized_unit=None,
+                        calculated_sub_index=260,
+                        is_valid=True,
+                        validation_note="Legacy unitless after window",
+                        raw_payload_json="{}",
+                        ingested_at_utc="2026-09-15T14:00:00Z",
+                    ),
+                ],
+            )
+            conn.execute(
+                """
+                INSERT INTO station_aqi_evaluations (
+                    station_id, district_id, evaluation_timestamp_utc, evaluation_date,
+                    source_provider, station_aqi, dominant_pollutant,
+                    meets_16h_completeness, meets_3_pollutant_pm_rule, is_valid_station_aqi,
+                    valid_pollutant_count, observed_pollutant_hours, expected_pollutant_hours,
+                    pollutants_json, rejection_reasons_json
+                )
+                VALUES (?, 'kolkata', '2026-09-15T10:00:00Z', '2026-09-15', 'cpcb_ogd', 100, 'PM2.5', 1, 1, 1, 3, 54, 112,
+                        '{"PM2.5":{"pollutant_key":"PM2.5","window_hours":24,"required_valid_hours":16,"observed_valid_hours":18,"expected_hours":24,"meets_completeness":true,"mean_concentration":60.0,"unit":"µg/m³","sub_index":100,"value_kind_used":"concentration"}}',
+                        '[]')
+                """,
+                (kol_st.station_id,),
+            )
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="kolkata",
+                    date="2026-09-15",
+                    district_aqi=100,
+                    dominant_pollutant="PM2.5",
+                    updated_at_utc="2026-09-15T10:00:00Z",
+                    source_attribution="CPCB / SPCB CAAQMS via data.gov.in (GODL-India)",
+                    reporting_stations=1,
+                    registered_stations=7,
+                    observed_station_pollutant_hours=54,
+                    expected_station_pollutant_hours=784,
+                    coverage=round(54 / 784, 4),
+                    quality="low",
+                    pollutants_json='[{"key":"PM2.5","value":60.0,"unit":"µg/m³","subIndex":100}]',
+                    caveats_json="[]",
+                ),
+            )
+
+            # Subcase B (2026-09-20, evaluation anchored at 2026-09-20T12:00:00Z -> window (2026-09-19T12:00:00Z, 2026-09-20T12:00:00Z]):
+            # Unbacked evaluation (0 observations inside window), with valid explicit-unit CPCB observations OUTSIDE window
+            # at 2026-09-19T08:00:00Z and 2026-09-20T15:00:00Z -> out-of-window valid rows must NOT suppress invalidation!
+            insert_raw_observations(
+                conn,
+                [
+                    RawStationObservation(
+                        station_id=kol_st.station_id,
+                        source_provider="cpcb_ogd",
+                        upstream_sensor_or_record_id="out_valid_before_sep20",
+                        pollutant_key="PM2.5",
+                        observed_at_utc="2026-09-19T08:00:00Z",
+                        window_hours=1,
+                        raw_value_text="50.0",
+                        raw_unit="µg/m³",
+                        value_kind="concentration",
+                        normalized_concentration=50.0,
+                        normalized_unit="µg/m³",
+                        calculated_sub_index=83,
+                        is_valid=True,
+                        validation_note="Verified µg/m³ outside window",
+                        raw_payload_json="{}",
+                        ingested_at_utc="2026-09-19T08:00:00Z",
+                    ),
+                    RawStationObservation(
+                        station_id=kol_st.station_id,
+                        source_provider="cpcb_ogd",
+                        upstream_sensor_or_record_id="out_valid_after_sep20",
+                        pollutant_key="PM2.5",
+                        observed_at_utc="2026-09-20T15:00:00Z",
+                        window_hours=1,
+                        raw_value_text="50.0",
+                        raw_unit="µg/m³",
+                        value_kind="concentration",
+                        normalized_concentration=50.0,
+                        normalized_unit="µg/m³",
+                        calculated_sub_index=83,
+                        is_valid=True,
+                        validation_note="Verified µg/m³ outside window",
+                        raw_payload_json="{}",
+                        ingested_at_utc="2026-09-20T15:00:00Z",
+                    ),
+                ],
+            )
+            conn.execute(
+                """
+                INSERT INTO station_aqi_evaluations (
+                    station_id, district_id, evaluation_timestamp_utc, evaluation_date,
+                    source_provider, station_aqi, dominant_pollutant,
+                    meets_16h_completeness, meets_3_pollutant_pm_rule, is_valid_station_aqi,
+                    valid_pollutant_count, observed_pollutant_hours, expected_pollutant_hours,
+                    pollutants_json, rejection_reasons_json
+                )
+                VALUES (?, 'kolkata', '2026-09-20T12:00:00Z', '2026-09-20', 'cpcb_ogd', 215, 'PM2.5', 1, 1, 1, 3, 54, 112, '{}', '[]')
+                """,
+                (kol_st.station_id,),
+            )
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="kolkata",
+                    date="2026-09-20",
+                    district_aqi=215,
+                    dominant_pollutant="PM2.5",
+                    updated_at_utc="2026-09-20T12:00:00Z",
+                    source_attribution="CPCB / SPCB CAAQMS via data.gov.in (GODL-India)",
+                    reporting_stations=1,
+                    registered_stations=7,
+                    observed_station_pollutant_hours=54,
+                    expected_station_pollutant_hours=784,
+                    coverage=round(54 / 784, 4),
+                    quality="low",
+                    pollutants_json='[{"key":"PM2.5","value":null,"unit":"µg/m³","subIndex":215}]',
+                    caveats_json="[]",
+                ),
+            )
+            conn.commit()
+
+            # Run Migration 003
+            self.assertEqual(run_migrations(conn), [3])
+
+            # Subcase A check: 2026-09-15 evaluation MUST be preserved at AQI=100 (unrelated out-of-window unitless rows ignored)
+            sep15_eval = conn.execute(
+                "SELECT station_aqi, is_valid_station_aqi FROM station_aqi_evaluations WHERE station_id = ? AND evaluation_date = '2026-09-15'",
+                (kol_st.station_id,),
+            ).fetchone()
+            self.assertEqual(sep15_eval["station_aqi"], 100)
+            self.assertEqual(sep15_eval["is_valid_station_aqi"], 1)
+
+            sep15_daily = conn.execute(
+                "SELECT district_aqi, reporting_stations FROM daily_district_history WHERE district_id = 'kolkata' AND date = '2026-09-15'"
+            ).fetchone()
+            self.assertEqual(sep15_daily["district_aqi"], 100)
+            self.assertEqual(sep15_daily["reporting_stations"], 1)
+
+            # Subcase B check: 2026-09-20 evaluation MUST be invalidated (out-of-window valid rows did not suppress reconciliation)
+            sep20_eval = conn.execute(
+                "SELECT station_aqi, is_valid_station_aqi FROM station_aqi_evaluations WHERE station_id = ? AND evaluation_date = '2026-09-20'",
+                (kol_st.station_id,),
+            ).fetchone()
+            self.assertIsNone(sep20_eval["station_aqi"])
+            self.assertEqual(sep20_eval["is_valid_station_aqi"], 0)
+
+            sep20_daily = conn.execute(
+                "SELECT district_aqi, quality, reporting_stations FROM daily_district_history WHERE district_id = 'kolkata' AND date = '2026-09-20'"
+            ).fetchone()
+            self.assertIsNone(sep20_daily["district_aqi"])
+            self.assertEqual(sep20_daily["quality"], "unavailable")
+            self.assertEqual(sep20_daily["reporting_stations"], 0)
+
+    def test_ist_utc_boundary_evaluation_window_reconciliation(self) -> None:
+        """Verify evaluations between 18:30Z and 23:59Z (next day in IST) reconcile using exact IST date & 24h UTC window."""
+        from app.migrations import (
+            MIGRATIONS,
+            run_migrations,
+            upsert_daily_district_history,
+            upsert_districts,
+            upsert_station_evaluation,
+            upsert_stations,
+        )
+        from app.models import DailyDistrictHistoryRecord
+        from app.districts_registry import list_target_districts, REVIEWED_STATIONS
+
+        with get_db_connection() as conn:
+            for version, name, sql in MIGRATIONS[:2]:
+                conn.executescript(sql)
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at_utc) VALUES (?, ?, ?)",
+                    (version, name, "2026-10-01T00:00:00Z"),
+                )
+            upsert_districts(conn, list_target_districts())
+            upsert_stations(conn, REVIEWED_STATIONS)
+
+            ch_st = list_verified_stations_for_district("chennai")[0]
+            # Timestamp 2026-10-10T20:00:00Z is 2026-10-11 01:30:00 IST -> evaluation_date = '2026-10-11'
+            # Its 24h window is (2026-10-09T20:00:00Z, 2026-10-10T20:00:00Z].
+            boundary_end_utc = datetime(2026, 10, 10, 20, 0, 0, tzinfo=timezone.utc)
+            self.assertEqual(format_ist_date(boundary_end_utc), "2026-10-11")
+
+            obs = []
+            for h in range(18):
+                ts = (boundary_end_utc - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                for p_key in ("PM2.5", "PM10", "NO2"):
+                    obs.append(
+                        RawStationObservation(
+                            station_id=ch_st.station_id,
+                            source_provider="cpcb_ogd",
+                            upstream_sensor_or_record_id=f"ist_bound:{p_key}:{ts}",
+                            pollutant_key=p_key,  # type: ignore[arg-type]
+                            observed_at_utc=ts,
+                            window_hours=24,
+                            raw_value_text="190",
+                            raw_unit="NA",
+                            value_kind="sub_index",
+                            normalized_concentration=None,
+                            normalized_unit=None,
+                            calculated_sub_index=190,
+                            is_valid=True,
+                            validation_note="Legacy unitless CPCB across IST midnight",
+                            raw_payload_json="{}",
+                            ingested_at_utc=ts,
+                        )
+                    )
+            insert_raw_observations(conn, obs)
+            ev_bound = evaluate_station_window(
+                station=ch_st, observations=obs, evaluation_end_utc=boundary_end_utc
+            )
+            self.assertEqual(ev_bound.evaluation_date, "2026-10-11")
+            upsert_station_evaluation(conn, ev_bound)
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="chennai",
+                    date="2026-10-11",
+                    district_aqi=190,
+                    dominant_pollutant="PM2.5",
+                    updated_at_utc="2026-10-10T20:00:00Z",
+                    source_attribution="CPCB / SPCB CAAQMS via data.gov.in (GODL-India)",
+                    reporting_stations=1,
+                    registered_stations=8,
+                    observed_station_pollutant_hours=54,
+                    expected_station_pollutant_hours=896,
+                    coverage=round(54 / 896, 4),
+                    quality="low",
+                    pollutants_json='[{"key":"PM2.5","value":null,"unit":"µg/m³","subIndex":190}]',
+                    caveats_json="[]",
+                ),
+            )
+            conn.commit()
+
+            # Run Migration 003
+            self.assertEqual(run_migrations(conn), [3])
+
+            # Verify IST date 2026-10-11 (anchored at 2026-10-10T20:00:00Z) is invalidated in both tables
+            ev_after = conn.execute(
+                "SELECT station_aqi, is_valid_station_aqi FROM station_aqi_evaluations WHERE station_id = ? AND evaluation_date = '2026-10-11'",
+                (ch_st.station_id,),
+            ).fetchone()
+            self.assertIsNone(ev_after["station_aqi"])
+            self.assertEqual(ev_after["is_valid_station_aqi"], 0)
+
+            daily_after = conn.execute(
+                "SELECT district_aqi, quality, reporting_stations FROM daily_district_history WHERE district_id = 'chennai' AND date = '2026-10-11'"
+            ).fetchone()
+            self.assertIsNone(daily_after["district_aqi"])
+            self.assertEqual(daily_after["quality"], "unavailable")
+            self.assertEqual(daily_after["reporting_stations"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
