@@ -1125,5 +1125,393 @@ class TestLegacyUnverifiedCpcbMigrationAndRecomputation(unittest.TestCase):
             self.assertEqual(row["quality"], "unavailable")
 
 
+
+    def test_hybrid_evaluation_with_unitless_cpcb_dependency_invalidates_or_recalculates_accurately(self) -> None:
+        """Verify hybrid daily records never retain stale AQI when CPCB is invalidated, and recalculate when OpenAQ suffices."""
+        from app.migrations import (
+            MIGRATIONS,
+            run_migrations,
+            upsert_daily_district_history,
+            upsert_districts,
+            upsert_station_evaluation,
+            upsert_stations,
+        )
+        from app.models import DailyDistrictHistoryRecord
+        from app.districts_registry import list_target_districts, REVIEWED_STATIONS
+
+        with get_db_connection() as conn:
+            for version, name, sql in MIGRATIONS[:2]:
+                conn.executescript(sql)
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at_utc) VALUES (?, ?, ?)",
+                    (version, name, "2026-11-01T00:00:00Z"),
+                )
+            upsert_districts(conn, list_target_districts())
+            upsert_stations(conn, REVIEWED_STATIONS)
+
+            # Case 1 (Lucknow on 2026-11-02): Hybrid record where PM2.5 & PM10 came from unitless CPCB (180)
+            # and only NO2 came from OpenAQ (50). Once unitless CPCB is invalidated, remaining OpenAQ (1 pollutant, no PM)
+            # is insufficient, so BOTH station_aqi_evaluations AND daily_district_history must become NULL/unavailable.
+            lko_st = list_verified_stations_for_district("lucknow")[0]
+            base_dt = datetime(2026, 11, 2, 12, 0, 0, tzinfo=timezone.utc)
+            case1_obs = []
+            for h in range(18):
+                ts = (base_dt - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                for p_key in ("PM2.5", "PM10"):
+                    case1_obs.append(
+                        RawStationObservation(
+                            station_id=lko_st.station_id,
+                            source_provider="cpcb_ogd",
+                            upstream_sensor_or_record_id=f"lko:cpcb:{p_key}:{ts}",
+                            pollutant_key=p_key,  # type: ignore[arg-type]
+                            observed_at_utc=ts,
+                            window_hours=24,
+                            raw_value_text="180",
+                            raw_unit="NA",
+                            value_kind="sub_index",
+                            normalized_concentration=None,
+                            normalized_unit=None,
+                            calculated_sub_index=180,
+                            is_valid=True,
+                            validation_note="Legacy unitless CPCB",
+                            raw_payload_json="{}",
+                            ingested_at_utc=ts,
+                        )
+                    )
+                case1_obs.append(
+                    RawStationObservation(
+                        station_id=lko_st.station_id,
+                        source_provider="openaq_v3",
+                        upstream_sensor_or_record_id=f"openaq_sensor:90013:{ts}",
+                        pollutant_key="NO2",
+                        observed_at_utc=ts,
+                        window_hours=1,
+                        raw_value_text="40.0",
+                        raw_unit="µg/m³",
+                        value_kind="concentration",
+                        normalized_concentration=40.0,
+                        normalized_unit="µg/m³",
+                        calculated_sub_index=50,
+                        is_valid=True,
+                        validation_note="Verified OpenAQ NO2",
+                        raw_payload_json="{}",
+                        ingested_at_utc=ts,
+                    )
+                )
+            insert_raw_observations(conn, case1_obs)
+            ev_case1 = evaluate_station_window(
+                station=lko_st, observations=case1_obs, evaluation_end_utc=base_dt
+            )
+            self.assertEqual(ev_case1.source_provider, "hybrid_cpcb_openaq")
+            self.assertEqual(ev_case1.station_aqi, 180)
+            upsert_station_evaluation(conn, ev_case1)
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="lucknow",
+                    date="2026-11-02",
+                    district_aqi=180,
+                    dominant_pollutant="PM2.5",
+                    updated_at_utc="2026-11-02T12:00:00Z",
+                    source_attribution="CPCB / SPCB CAAQMS via OpenAQ v3 & data.gov.in (GODL-India)",
+                    reporting_stations=1,
+                    registered_stations=4,
+                    observed_station_pollutant_hours=72,
+                    expected_station_pollutant_hours=448,
+                    coverage=round(72 / 448, 4),
+                    quality="medium",
+                    pollutants_json='[{"key":"PM2.5","value":null,"unit":"µg/m³","subIndex":180}]',
+                    caveats_json="[]",
+                ),
+            )
+
+            # Case 2 (Patna on 2026-11-02): Hybrid record where OpenAQ has 18h of valid PM2.5 (60 -> sub 100),
+            # PM10 (100 -> sub 100), and NO2 (40 -> sub 50), PLUS unitless CPCB SO2 (240) that inflated hybrid AQI to 240.
+            patna_st = list_verified_stations_for_district("patna")[0]
+            case2_obs = []
+            for h in range(18):
+                ts = (base_dt - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                for p_key, conc, sub_i in [("PM2.5", 60.0, 100), ("PM10", 100.0, 100), ("NO2", 40.0, 50)]:
+                    case2_obs.append(
+                        RawStationObservation(
+                            station_id=patna_st.station_id,
+                            source_provider="openaq_v3",
+                            upstream_sensor_or_record_id=f"openaq_sensor:7001:{p_key}:{ts}",
+                            pollutant_key=p_key,  # type: ignore[arg-type]
+                            observed_at_utc=ts,
+                            window_hours=1,
+                            raw_value_text=str(conc),
+                            raw_unit="µg/m³",
+                            value_kind="concentration",
+                            normalized_concentration=conc,
+                            normalized_unit="µg/m³",
+                            calculated_sub_index=sub_i,
+                            is_valid=True,
+                            validation_note="Verified OpenAQ",
+                            raw_payload_json="{}",
+                            ingested_at_utc=ts,
+                        )
+                    )
+                case2_obs.append(
+                    RawStationObservation(
+                        station_id=patna_st.station_id,
+                        source_provider="cpcb_ogd",
+                        upstream_sensor_or_record_id=f"patna:cpcb:SO2:{ts}",
+                        pollutant_key="SO2",
+                        observed_at_utc=ts,
+                        window_hours=24,
+                        raw_value_text="240",
+                        raw_unit=None,
+                        value_kind="sub_index",
+                        normalized_concentration=None,
+                        normalized_unit=None,
+                        calculated_sub_index=240,
+                        is_valid=True,
+                        validation_note="Legacy unitless CPCB SO2",
+                        raw_payload_json="{}",
+                        ingested_at_utc=ts,
+                    )
+                )
+            insert_raw_observations(conn, case2_obs)
+            ev_case2 = evaluate_station_window(
+                station=patna_st, observations=case2_obs, evaluation_end_utc=base_dt
+            )
+            self.assertEqual(ev_case2.source_provider, "hybrid_cpcb_openaq")
+            self.assertEqual(ev_case2.station_aqi, 240)
+            upsert_station_evaluation(conn, ev_case2)
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="patna",
+                    date="2026-11-02",
+                    district_aqi=240,
+                    dominant_pollutant="SO2",
+                    updated_at_utc="2026-11-02T12:00:00Z",
+                    source_attribution="CPCB / SPCB CAAQMS via OpenAQ v3 & data.gov.in (GODL-India)",
+                    reporting_stations=1,
+                    registered_stations=6,
+                    observed_station_pollutant_hours=96,
+                    expected_station_pollutant_hours=672,
+                    coverage=round(96 / 672, 4),
+                    quality="low",
+                    pollutants_json='[{"key":"SO2","value":null,"unit":"µg/m³","subIndex":240}]',
+                    caveats_json="[]",
+                ),
+            )
+            conn.commit()
+
+            # Apply Migration 003 (without manually calling recompute_district_history_window)
+            applied = run_migrations(conn)
+            self.assertEqual(applied, [3])
+
+            # Verify Case 1 (Lucknow): BOTH station evaluation AND daily_district_history are now invalidated
+            lko_eval = conn.execute(
+                "SELECT station_aqi, is_valid_station_aqi FROM station_aqi_evaluations WHERE station_id = ? AND evaluation_date = '2026-11-02'",
+                (lko_st.station_id,),
+            ).fetchone()
+            self.assertIsNotNone(lko_eval)
+            self.assertIsNone(lko_eval["station_aqi"])
+            self.assertEqual(lko_eval["is_valid_station_aqi"], 0)
+
+            lko_daily = conn.execute(
+                "SELECT district_aqi, quality, reporting_stations FROM daily_district_history WHERE district_id = 'lucknow' AND date = '2026-11-02'"
+            ).fetchone()
+            self.assertIsNotNone(lko_daily)
+            self.assertIsNone(lko_daily["district_aqi"])
+            self.assertEqual(lko_daily["quality"], "unavailable")
+            self.assertEqual(lko_daily["reporting_stations"], 0)
+
+            # Verify Case 2 (Patna): Recalculated from remaining valid OpenAQ observations to AQI=100 (PM2.5)
+            patna_eval = conn.execute(
+                "SELECT station_aqi, dominant_pollutant, source_provider, is_valid_station_aqi FROM station_aqi_evaluations WHERE station_id = ? AND evaluation_date = '2026-11-02'",
+                (patna_st.station_id,),
+            ).fetchone()
+            self.assertIsNotNone(patna_eval)
+            self.assertEqual(patna_eval["station_aqi"], 100)
+            self.assertEqual(patna_eval["dominant_pollutant"], "PM2.5")
+            self.assertEqual(patna_eval["source_provider"], "openaq_v3")
+            self.assertEqual(patna_eval["is_valid_station_aqi"], 1)
+
+            patna_daily = conn.execute(
+                "SELECT district_aqi, dominant_pollutant, source_attribution, reporting_stations FROM daily_district_history WHERE district_id = 'patna' AND date = '2026-11-02'"
+            ).fetchone()
+            self.assertIsNotNone(patna_daily)
+            self.assertEqual(patna_daily["district_aqi"], 100)
+            self.assertEqual(patna_daily["dominant_pollutant"], "PM2.5")
+            self.assertEqual(patna_daily["source_attribution"], "CPCB / SPCB CAAQMS via OpenAQ v3")
+            self.assertEqual(patna_daily["reporting_stations"], 1)
+
+    def test_cpcb_explicit_units_preserved_and_historical_dates_older_than_30_days_handled(self) -> None:
+        """Verify CPCB records with explicit physical units remain valid and dates >30 days old are handled accurately."""
+        from app.migrations import (
+            MIGRATIONS,
+            run_migrations,
+            upsert_daily_district_history,
+            upsert_districts,
+            upsert_station_evaluation,
+            upsert_stations,
+        )
+        from app.models import DailyDistrictHistoryRecord
+        from app.districts_registry import list_target_districts, REVIEWED_STATIONS
+
+        with get_db_connection() as conn:
+            for version, name, sql in MIGRATIONS[:2]:
+                conn.executescript(sql)
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at_utc) VALUES (?, ?, ?)",
+                    (version, name, "2026-08-01T00:00:00Z"),
+                )
+            upsert_districts(conn, list_target_districts())
+            upsert_stations(conn, REVIEWED_STATIONS)
+
+            kol_st = list_verified_stations_for_district("kolkata")[0]
+            # Historical Date 1: 2026-09-01 (62 days before 2026-11-02, older than 30-day window)
+            # CPCB-only record supported EXCLUSIVELY by explicit physical units (µg/m³) -> MUST remain valid (AQI=100)
+            dt_sep1 = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
+            sep1_obs = []
+            for h in range(18):
+                ts = (dt_sep1 - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                for p_key, conc, sub_i in [("PM2.5", 60.0, 100), ("PM10", 100.0, 100), ("NO2", 40.0, 50)]:
+                    sep1_obs.append(
+                        RawStationObservation(
+                            station_id=kol_st.station_id,
+                            source_provider="cpcb_ogd",
+                            upstream_sensor_or_record_id=f"kol:sep1:{p_key}:{ts}",
+                            pollutant_key=p_key,  # type: ignore[arg-type]
+                            observed_at_utc=ts,
+                            window_hours=1,
+                            raw_value_text=str(conc),
+                            raw_unit="µg/m³",
+                            value_kind="concentration",
+                            normalized_concentration=conc,
+                            normalized_unit="µg/m³",
+                            calculated_sub_index=sub_i,
+                            is_valid=True,
+                            validation_note="Verified µg/m³ CPCB",
+                            raw_payload_json="{}",
+                            ingested_at_utc=ts,
+                        )
+                    )
+            insert_raw_observations(conn, sep1_obs)
+            ev_sep1 = evaluate_station_window(
+                station=kol_st, observations=sep1_obs, evaluation_end_utc=dt_sep1
+            )
+            self.assertEqual(ev_sep1.source_provider, "cpcb_ogd")
+            self.assertEqual(ev_sep1.station_aqi, 100)
+            upsert_station_evaluation(conn, ev_sep1)
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="kolkata",
+                    date="2026-09-01",
+                    district_aqi=100,
+                    dominant_pollutant="PM2.5",
+                    updated_at_utc="2026-09-01T12:00:00Z",
+                    source_attribution="CPCB / SPCB CAAQMS via data.gov.in (GODL-India)",
+                    reporting_stations=1,
+                    registered_stations=7,
+                    observed_station_pollutant_hours=54,
+                    expected_station_pollutant_hours=784,
+                    coverage=round(54 / 784, 4),
+                    quality="low",
+                    pollutants_json='[{"key":"PM2.5","value":60.0,"unit":"µg/m³","subIndex":100}]',
+                    caveats_json="[]",
+                ),
+            )
+
+            # Historical Date 2: 2026-08-20 (74 days before 2026-11-02, older than 30-day window)
+            # CPCB-only record dependent on unitless legacy observations -> MUST be invalidated even though >30 days old
+            dt_aug20 = datetime(2026, 8, 20, 12, 0, 0, tzinfo=timezone.utc)
+            aug20_obs = []
+            for h in range(18):
+                ts = (dt_aug20 - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                for p_key in ("PM2.5", "PM10", "NO2"):
+                    aug20_obs.append(
+                        RawStationObservation(
+                            station_id=kol_st.station_id,
+                            source_provider="cpcb_ogd",
+                            upstream_sensor_or_record_id=f"kol:aug20:{p_key}:{ts}",
+                            pollutant_key=p_key,  # type: ignore[arg-type]
+                            observed_at_utc=ts,
+                            window_hours=24,
+                            raw_value_text="195",
+                            raw_unit="NA",
+                            value_kind="sub_index",
+                            normalized_concentration=None,
+                            normalized_unit=None,
+                            calculated_sub_index=195,
+                            is_valid=True,
+                            validation_note="Legacy unitless CPCB",
+                            raw_payload_json="{}",
+                            ingested_at_utc=ts,
+                        )
+                    )
+            insert_raw_observations(conn, aug20_obs)
+            ev_aug20 = evaluate_station_window(
+                station=kol_st, observations=aug20_obs, evaluation_end_utc=dt_aug20
+            )
+            upsert_station_evaluation(conn, ev_aug20)
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="kolkata",
+                    date="2026-08-20",
+                    district_aqi=195,
+                    dominant_pollutant="PM2.5",
+                    updated_at_utc="2026-08-20T12:00:00Z",
+                    source_attribution="CPCB / SPCB CAAQMS via data.gov.in (GODL-India)",
+                    reporting_stations=1,
+                    registered_stations=7,
+                    observed_station_pollutant_hours=54,
+                    expected_station_pollutant_hours=784,
+                    coverage=round(54 / 784, 4),
+                    quality="low",
+                    pollutants_json='[{"key":"PM2.5","value":null,"unit":"µg/m³","subIndex":195}]',
+                    caveats_json="[]",
+                ),
+            )
+            conn.commit()
+
+            # Run Migration 003
+            self.assertEqual(run_migrations(conn), [3])
+
+            # 1. Verify 2026-09-01 (explicit physical units, >30 days old) remained valid!
+            sep1_eval_row = conn.execute(
+                "SELECT station_aqi, is_valid_station_aqi, source_provider FROM station_aqi_evaluations WHERE station_id = ? AND evaluation_date = '2026-09-01'",
+                (kol_st.station_id,),
+            ).fetchone()
+            self.assertEqual(sep1_eval_row["station_aqi"], 100)
+            self.assertEqual(sep1_eval_row["is_valid_station_aqi"], 1)
+            self.assertEqual(sep1_eval_row["source_provider"], "cpcb_ogd")
+
+            sep1_daily_row = conn.execute(
+                "SELECT district_aqi, quality, reporting_stations FROM daily_district_history WHERE district_id = 'kolkata' AND date = '2026-09-01'"
+            ).fetchone()
+            self.assertEqual(sep1_daily_row["district_aqi"], 100)
+            self.assertEqual(sep1_daily_row["reporting_stations"], 1)
+
+            # 2. Verify 2026-08-20 (unitless CPCB, >30 days old) was invalidated!
+            aug20_eval_row = conn.execute(
+                "SELECT station_aqi, is_valid_station_aqi FROM station_aqi_evaluations WHERE station_id = ? AND evaluation_date = '2026-08-20'",
+                (kol_st.station_id,),
+            ).fetchone()
+            self.assertIsNone(aug20_eval_row["station_aqi"])
+            self.assertEqual(aug20_eval_row["is_valid_station_aqi"], 0)
+
+            aug20_daily_row = conn.execute(
+                "SELECT district_aqi, quality, reporting_stations FROM daily_district_history WHERE district_id = 'kolkata' AND date = '2026-08-20'"
+            ).fetchone()
+            self.assertIsNone(aug20_daily_row["district_aqi"])
+            self.assertEqual(aug20_daily_row["quality"], "unavailable")
+            self.assertEqual(aug20_daily_row["reporting_stations"], 0)
+
+            # 3. Also run a standard 30-day recompute anchored at 2026-11-02 and verify 2026-09-01 is still preserved
+            recompute_district_history_window(conn, anchor_date_str="2026-11-02", days=30)
+            sep1_after_30d_recompute = conn.execute(
+                "SELECT district_aqi FROM daily_district_history WHERE district_id = 'kolkata' AND date = '2026-09-01'"
+            ).fetchone()
+            self.assertEqual(sep1_after_30d_recompute["district_aqi"], 100)
+
+
 if __name__ == "__main__":
     unittest.main()

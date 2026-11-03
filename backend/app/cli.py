@@ -32,7 +32,9 @@ from app.migrations import (
     get_latest_sensor_observation_time,
     get_latest_station_observation_time,
     insert_raw_observations,
+    load_station_observations_from_db,
     load_stations_from_db,
+    recompute_district_for_ist_date,
     run_migrations,
     update_station_openaq_mapping,
     upsert_daily_district_history,
@@ -119,87 +121,13 @@ def recompute_district_history_window(
         verified_stations = load_stations_from_db(
             conn, district_id=district.id, verified_only=True
         ) or list_verified_stations_for_district(district.id)
-        station_ids = [s.station_id for s in verified_stations]
 
         for day_offset in range(days):
             target_ist_date = (ref_date - timedelta(days=days - 1 - day_offset)).isoformat()
-            ist_day_start_utc, ist_day_end_utc = ist_date_bounds_in_utc(target_ist_date)
-
-            # Check if any valid observations exist within this IST calendar day [00:00:00+05:30, 23:59:59+05:30]
-            day_obs = load_station_observations(
-                conn,
-                station_ids,
-                ist_day_start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                ist_day_end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            )
-            valid_day_obs = [o for o in day_obs if o.is_valid]
-            if not valid_day_obs:
-                existing_daily = conn.execute(
-                    "SELECT 1 FROM daily_district_history WHERE district_id = ? AND date = ?",
-                    (district.id, target_ist_date),
-                ).fetchone()
-                if existing_daily is not None:
-                    invalidated_rec = aggregate_district_for_date(
-                        district=district,
-                        registered_stations=verified_stations,
-                        station_evaluations=[],
-                        evaluation_date=target_ist_date,
-                        updated_at_utc=None,
-                        source_attribution="auto",
-                        now_utc=ist_day_end_utc,
-                    )
-                    upsert_daily_district_history(conn, invalidated_rec)
-                    conn.execute(
-                        "DELETE FROM station_aqi_evaluations WHERE district_id = ? AND evaluation_date = ?",
-                        (district.id, target_ist_date),
-                    )
-                    updated_records += 1
-                continue
-
-            # Anchor the 24-hour CPCB rolling evaluation window to the latest valid observation on that IST day
-            latest_on_day_str = max(o.observed_at_utc for o in valid_day_obs)
-            eval_end = datetime.fromisoformat(
-                latest_on_day_str.replace("Z", "+00:00")
-            ).astimezone(timezone.utc)
-            eval_start = eval_end - timedelta(hours=24)
-
-            obs = load_station_observations(
-                conn,
-                station_ids,
-                eval_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                eval_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            )
-
-            station_evals = []
-            latest_obs_utc: Optional[str] = None
-
-            for st in verified_stations:
-                st_obs = [o for o in obs if o.station_id == st.station_id]
-                for o in st_obs:
-                    if o.is_valid:
-                        if latest_obs_utc is None or o.observed_at_utc > latest_obs_utc:
-                            latest_obs_utc = o.observed_at_utc
-
-                ev = evaluate_station_window(
-                    station=st,
-                    observations=st_obs,
-                    evaluation_end_utc=eval_end,
-                )
-                # Ensure the persisted evaluation_date matches the target IST calendar date
-                upsert_station_evaluation(conn, ev)
-                station_evals.append(ev)
-
-            daily_rec = aggregate_district_for_date(
-                district=district,
-                registered_stations=verified_stations,
-                station_evaluations=station_evals,
-                evaluation_date=target_ist_date,
-                updated_at_utc=latest_obs_utc,
-                source_attribution="auto",
-                now_utc=eval_end,
-            )
-            upsert_daily_district_history(conn, daily_rec)
-            updated_records += 1
+            if recompute_district_for_ist_date(
+                conn, district, verified_stations, target_ist_date
+            ):
+                updated_records += 1
 
     conn.commit()
     return updated_records

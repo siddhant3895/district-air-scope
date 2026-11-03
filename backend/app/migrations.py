@@ -1,10 +1,16 @@
 """Database schema migrations and repository persistence helpers for DistrictWatch."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import date, datetime, timedelta, timezone
 import json
 import sqlite3
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
+from app.districts_registry import (
+    REVIEWED_STATIONS,
+    get_district_mapping,
+    list_verified_stations_for_district,
+)
 from app.models import (
     DailyDistrictHistoryRecord,
     RawStationObservation,
@@ -13,6 +19,12 @@ from app.models import (
     SyncRunRecord,
 )
 from app.schemas import District
+from app.services.aggregator import (
+    aggregate_district_for_date,
+    evaluate_station_window,
+    format_ist_date,
+    ist_date_bounds_in_utc,
+)
 
 MIGRATIONS: Tuple[Tuple[int, str, str], ...] = (
     (
@@ -156,34 +168,349 @@ MIGRATIONS: Tuple[Tuple[int, str, str], ...] = (
               raw_unit IS NULL
               OR TRIM(UPPER(raw_unit)) IN ('', 'NA', 'N/A', 'NONE', 'NULL', '-', 'UNKNOWN')
           );
-
-        UPDATE station_aqi_evaluations
-        SET station_aqi = NULL,
-            dominant_pollutant = NULL,
-            meets_16h_completeness = 0,
-            meets_3_pollutant_pm_rule = 0,
-            is_valid_station_aqi = 0,
-            valid_pollutant_count = 0,
-            observed_pollutant_hours = 0,
-            rejection_reasons_json = '["Invalidated by migration 003: underlying unitless CPCB observations lack verified unit semantics."]'
-        WHERE source_provider IN ('cpcb_ogd', 'hybrid_cpcb_openaq');
-
-        UPDATE daily_district_history
-        SET district_aqi = NULL,
-            dominant_pollutant = NULL,
-            updated_at_utc = NULL,
-            source_attribution = 'No verified station readings met completeness in window',
-            reporting_stations = 0,
-            observed_station_pollutant_hours = 0,
-            coverage = 0.0,
-            quality = 'unavailable',
-            pollutants_json = '[{"key": "PM2.5", "value": null, "unit": "\u00b5g/m\u00b3", "subIndex": null}, {"key": "PM10", "value": null, "unit": "\u00b5g/m\u00b3", "subIndex": null}, {"key": "NO2", "value": null, "unit": "\u00b5g/m\u00b3", "subIndex": null}, {"key": "SO2", "value": null, "unit": "\u00b5g/m\u00b3", "subIndex": null}, {"key": "O3", "value": null, "unit": "\u00b5g/m\u00b3", "subIndex": null}, {"key": "CO", "value": null, "unit": "mg/m\u00b3", "subIndex": null}]',
-            caveats_json = '["No station readings received for this district in the current window."]'
-        WHERE source_attribution LIKE '%data.gov.in%'
-          AND source_attribution NOT LIKE '%OpenAQ%';
         """,
     ),
 )
+
+
+def _parse_utc(iso_str: str) -> datetime:
+    clean = iso_str.strip().replace("Z", "+00:00")
+    dt = datetime.fromisoformat(clean)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def load_station_observations_from_db(
+    conn: sqlite3.Connection,
+    station_ids: List[str],
+    start_utc: str,
+    end_utc: str,
+) -> List[RawStationObservation]:
+    """Load RawStationObservation rows for `station_ids` within `(start_utc, end_utc]`."""
+    if not station_ids:
+        return []
+    placeholders = ",".join("?" for _ in station_ids)
+    query = f"""
+        SELECT * FROM raw_station_observations
+        WHERE station_id IN ({placeholders})
+          AND observed_at_utc > ?
+          AND observed_at_utc <= ?
+        ORDER BY observed_at_utc ASC
+    """
+    rows = conn.execute(query, (*station_ids, start_utc, end_utc)).fetchall()
+    return [
+        RawStationObservation(
+            station_id=r["station_id"],
+            source_provider=r["source_provider"],
+            upstream_sensor_or_record_id=r["upstream_sensor_or_record_id"],
+            pollutant_key=r["pollutant_key"],
+            observed_at_utc=r["observed_at_utc"],
+            window_hours=int(r["window_hours"]),
+            raw_value_text=r["raw_value_text"],
+            raw_unit=r["raw_unit"],
+            value_kind=r["value_kind"],
+            normalized_concentration=r["normalized_concentration"],
+            normalized_unit=r["normalized_unit"],
+            calculated_sub_index=r["calculated_sub_index"],
+            is_valid=bool(r["is_valid"]),
+            validation_note=r["validation_note"],
+            raw_payload_json=r["raw_payload_json"],
+            ingested_at_utc=r["ingested_at_utc"],
+        )
+        for r in rows
+    ]
+
+
+def _resolve_district_record(conn: sqlite3.Connection, district_id: str) -> Optional[District]:
+    mapping = get_district_mapping(district_id)
+    if mapping is not None:
+        return mapping.district
+    row = conn.execute("SELECT * FROM districts WHERE id = ?", (district_id,)).fetchone()
+    if row is not None:
+        return District(
+            id=row["id"],
+            name=row["name"],
+            state=row["state"],
+            lat=float(row["lat"]),
+            lon=float(row["lon"]),
+        )
+    return None
+
+
+def recompute_district_for_ist_date(
+    conn: sqlite3.Connection,
+    district: District,
+    verified_stations: List[StationRecord],
+    target_ist_date: str,
+) -> bool:
+    """Recompute station evaluations and daily district history for a single (district, IST date).
+
+    - When valid observations exist on `target_ist_date`, evaluates the 24-hour rolling window
+      anchored to the latest valid observation on that date and updates `station_aqi_evaluations`
+      and `daily_district_history`.
+    - When no valid observations remain on `target_ist_date`, invalidates any existing
+      `station_aqi_evaluations` or `daily_district_history` rows for `(district.id, target_ist_date)`
+      so stale derived AQIs (including hybrid records) never remain exposed.
+    """
+    station_ids = [s.station_id for s in verified_stations]
+    ist_day_start_utc, ist_day_end_utc = ist_date_bounds_in_utc(target_ist_date)
+
+    day_obs = load_station_observations_from_db(
+        conn,
+        station_ids,
+        ist_day_start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        ist_day_end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    valid_day_obs = [o for o in day_obs if o.is_valid]
+
+    if not valid_day_obs:
+        existing_daily = conn.execute(
+            "SELECT 1 FROM daily_district_history WHERE district_id = ? AND date = ?",
+            (district.id, target_ist_date),
+        ).fetchone()
+        existing_eval = conn.execute(
+            "SELECT 1 FROM station_aqi_evaluations WHERE district_id = ? AND evaluation_date = ?",
+            (district.id, target_ist_date),
+        ).fetchone()
+
+        if existing_eval is not None:
+            conn.execute(
+                """
+                UPDATE station_aqi_evaluations
+                SET station_aqi = NULL,
+                    dominant_pollutant = NULL,
+                    meets_16h_completeness = 0,
+                    meets_3_pollutant_pm_rule = 0,
+                    is_valid_station_aqi = 0,
+                    valid_pollutant_count = 0,
+                    observed_pollutant_hours = 0,
+                    rejection_reasons_json = '["Invalidated: no valid station observations remain in evaluation window."]'
+                WHERE district_id = ? AND evaluation_date = ?
+                """,
+                (district.id, target_ist_date),
+            )
+
+        if existing_daily is not None:
+            invalidated_rec = aggregate_district_for_date(
+                district=district,
+                registered_stations=verified_stations,
+                station_evaluations=[],
+                evaluation_date=target_ist_date,
+                updated_at_utc=None,
+                source_attribution="auto",
+                now_utc=ist_day_end_utc,
+            )
+            upsert_daily_district_history(conn, invalidated_rec)
+
+        return existing_daily is not None or existing_eval is not None
+
+    latest_on_day_str = max(o.observed_at_utc for o in valid_day_obs)
+    eval_end = _parse_utc(latest_on_day_str)
+    eval_start = eval_end - timedelta(hours=24)
+
+    obs = load_station_observations_from_db(
+        conn,
+        station_ids,
+        eval_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        eval_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+
+    station_evals: List[StationAqiEvaluation] = []
+    latest_obs_utc: Optional[str] = None
+
+    for st in verified_stations:
+        st_obs = [o for o in obs if o.station_id == st.station_id]
+        for o in st_obs:
+            if o.is_valid:
+                if latest_obs_utc is None or o.observed_at_utc > latest_obs_utc:
+                    latest_obs_utc = o.observed_at_utc
+
+        ev = evaluate_station_window(
+            station=st,
+            observations=st_obs,
+            evaluation_end_utc=eval_end,
+        )
+        if ev.evaluation_date != target_ist_date:
+            ev = replace(ev, evaluation_date=target_ist_date)
+        upsert_station_evaluation(conn, ev)
+        station_evals.append(ev)
+
+    # Also invalidate any orphan station_aqi_evaluations rows on target_ist_date for stations not in verified_stations
+    verified_ids = {s.station_id for s in verified_stations}
+    eval_rows = conn.execute(
+        "SELECT id, station_id FROM station_aqi_evaluations WHERE district_id = ? AND evaluation_date = ?",
+        (district.id, target_ist_date),
+    ).fetchall()
+    for r in eval_rows:
+        if r["station_id"] not in verified_ids:
+            conn.execute(
+                """
+                UPDATE station_aqi_evaluations
+                SET station_aqi = NULL,
+                    dominant_pollutant = NULL,
+                    meets_16h_completeness = 0,
+                    meets_3_pollutant_pm_rule = 0,
+                    is_valid_station_aqi = 0,
+                    valid_pollutant_count = 0,
+                    observed_pollutant_hours = 0
+                WHERE id = ?
+                """,
+                (r["id"],),
+            )
+
+    daily_rec = aggregate_district_for_date(
+        district=district,
+        registered_stations=verified_stations,
+        station_evaluations=station_evals,
+        evaluation_date=target_ist_date,
+        updated_at_utc=latest_obs_utc,
+        source_attribution="auto",
+        now_utc=eval_end,
+    )
+    upsert_daily_district_history(conn, daily_rec)
+    return True
+
+
+def _reconcile_evaluations_after_migration_003(
+    conn: sqlite3.Connection,
+    invalidated_cpcb_rows: List[sqlite3.Row],
+) -> None:
+    """Targeted post-invalidation reconciliation for Migration 003 across all historical dates.
+
+    - Preserves historical evaluations and daily district records supported exclusively by
+      explicit, verified physical units (where zero unitless CPCB observations were invalidated
+      and valid explicit-unit CPCB observations exist in the evaluation window).
+    - Recomputes (or invalidates if insufficient valid data remains) every (district_id, date)
+      whose calculation depended on invalidated unitless/NA-unit CPCB observations, including
+      hybrid records and historical dates older than 30 days.
+    """
+    station_to_district: Dict[str, str] = {
+        s.station_id: s.district_id for s in REVIEWED_STATIONS
+    }
+    for r in conn.execute("SELECT station_id, district_id FROM stations").fetchall():
+        station_to_district[r["station_id"]] = r["district_id"]
+
+    # 1. Dates directly touched by newly invalidated unitless CPCB observations
+    dates_with_unitless_cpcb: Set[Tuple[str, str]] = set()
+    for r in invalidated_cpcb_rows:
+        d_id = station_to_district.get(r["station_id"])
+        if not d_id:
+            continue
+        dt = _parse_utc(r["observed_at_utc"])
+        ist_d = format_ist_date(dt)
+        next_ist_d = (date.fromisoformat(ist_d) + timedelta(days=1)).isoformat()
+        utc_d = dt.strftime("%Y-%m-%d")
+        dates_with_unitless_cpcb.add((d_id, ist_d))
+        dates_with_unitless_cpcb.add((d_id, next_ist_d))
+        dates_with_unitless_cpcb.add((d_id, utc_d))
+
+    # 2. Existing station evaluations and daily history records in the DB (across all historical dates)
+    existing_eval_dates: Set[Tuple[str, str]] = {
+        (r["district_id"], r["evaluation_date"])
+        for r in conn.execute(
+            "SELECT DISTINCT district_id, evaluation_date FROM station_aqi_evaluations"
+        ).fetchall()
+    }
+    existing_daily_dates: Set[Tuple[str, str]] = {
+        (r["district_id"], r["date"])
+        for r in conn.execute(
+            "SELECT DISTINCT district_id, date FROM daily_district_history"
+        ).fetchall()
+    }
+    all_persisted_dates = existing_eval_dates | existing_daily_dates
+
+    affected_district_dates: Set[Tuple[str, str]] = set()
+    for d_id, target_date in all_persisted_dates:
+        if (d_id, target_date) in dates_with_unitless_cpcb:
+            affected_district_dates.add((d_id, target_date))
+
+    # 3. Also check any persisted CPCB or hybrid evaluation/history row not in dates_with_unitless_cpcb
+    #    to verify whether it is genuinely backed by valid explicit-unit CPCB observations.
+    cpcb_or_hybrid_candidates: Set[Tuple[str, str]] = set()
+    for r in conn.execute(
+        """
+        SELECT DISTINCT district_id, evaluation_date
+        FROM station_aqi_evaluations
+        WHERE source_provider IN ('cpcb_ogd', 'hybrid_cpcb_openaq')
+        """
+    ).fetchall():
+        cpcb_or_hybrid_candidates.add((r["district_id"], r["evaluation_date"]))
+
+    for r in conn.execute(
+        """
+        SELECT DISTINCT district_id, date
+        FROM daily_district_history
+        WHERE source_attribution LIKE '%data.gov.in%'
+        """
+    ).fetchall():
+        cpcb_or_hybrid_candidates.add((r["district_id"], r["date"]))
+
+    for d_id, target_date in cpcb_or_hybrid_candidates:
+        if (d_id, target_date) in affected_district_dates:
+            continue
+        verified_stations = load_stations_from_db(
+            conn, district_id=d_id, verified_only=True
+        ) or list_verified_stations_for_district(d_id)
+        station_ids = [s.station_id for s in verified_stations]
+        if not station_ids:
+            affected_district_dates.add((d_id, target_date))
+            continue
+
+        ist_start, ist_end = ist_date_bounds_in_utc(target_date)
+        win_start = (ist_start - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        win_end = max(ist_end, _parse_utc(f"{target_date}T23:59:59Z")).strftime("%Y-%m-%dT%H:%M:%SZ")
+        placeholders = ",".join("?" for _ in station_ids)
+
+        # Check if any unitless/invalid CPCB observation exists in this window
+        unitless_in_win = conn.execute(
+            f"""
+            SELECT 1 FROM raw_station_observations
+            WHERE station_id IN ({placeholders})
+              AND source_provider = 'cpcb_ogd'
+              AND is_valid = 0
+              AND (
+                  raw_unit IS NULL
+                  OR TRIM(UPPER(raw_unit)) IN ('', 'NA', 'N/A', 'NONE', 'NULL', '-', 'UNKNOWN')
+              )
+              AND observed_at_utc > ?
+              AND observed_at_utc <= ?
+            LIMIT 1
+            """,
+            (*station_ids, win_start, win_end),
+        ).fetchone()
+
+        if unitless_in_win is not None:
+            affected_district_dates.add((d_id, target_date))
+            continue
+
+        # Check if at least one valid explicit-unit CPCB observation backs this CPCB/hybrid date
+        valid_cpcb_in_win = conn.execute(
+            f"""
+            SELECT 1 FROM raw_station_observations
+            WHERE station_id IN ({placeholders})
+              AND source_provider = 'cpcb_ogd'
+              AND is_valid = 1
+              AND observed_at_utc > ?
+              AND observed_at_utc <= ?
+            LIMIT 1
+            """,
+            (*station_ids, win_start, win_end),
+        ).fetchone()
+
+        if valid_cpcb_in_win is None:
+            # No valid explicit-unit CPCB observations exist for this CPCB/hybrid record -> must recompute/invalidate
+            affected_district_dates.add((d_id, target_date))
+
+    # 4. Recompute every affected (district_id, target_date) across all historical dates
+    for d_id, target_date in sorted(affected_district_dates):
+        district = _resolve_district_record(conn, d_id)
+        if district is None:
+            continue
+        verified_stations = load_stations_from_db(
+            conn, district_id=d_id, verified_only=True
+        ) or list_verified_stations_for_district(d_id)
+        recompute_district_for_ist_date(conn, district, verified_stations, target_date)
 
 
 def run_migrations(conn: sqlite3.Connection) -> List[int]:
@@ -205,6 +532,7 @@ def run_migrations(conn: sqlite3.Connection) -> List[int]:
     for version, name, sql in MIGRATIONS:
         if version in applied_versions:
             continue
+        invalidated_cpcb_rows: List[sqlite3.Row] = []
         if version == 3:
             # Ensure legacy v2 databases that had old ingestion_sync_runs columns are upgraded seamlessly
             cols = {
@@ -221,8 +549,26 @@ def run_migrations(conn: sqlite3.Connection) -> List[int]:
                     ALTER TABLE ingestion_sync_runs ADD COLUMN openaq_error TEXT;
                     """
                 )
+            # Capture unitless/NA-unit CPCB observations before invalidating them so we know which dates are affected
+            invalidated_cpcb_rows = conn.execute(
+                """
+                SELECT station_id, observed_at_utc
+                FROM raw_station_observations
+                WHERE source_provider = 'cpcb_ogd'
+                  AND is_valid = 1
+                  AND (
+                      raw_unit IS NULL
+                      OR TRIM(UPPER(raw_unit)) IN ('', 'NA', 'N/A', 'NONE', 'NULL', '-', 'UNKNOWN')
+                  )
+                """
+            ).fetchall()
+
         conn.executescript(sql)
         conn.execute("PRAGMA foreign_keys = ON;")
+
+        if version == 3:
+            _reconcile_evaluations_after_migration_003(conn, invalidated_cpcb_rows)
+
         conn.execute(
             "INSERT INTO schema_migrations (version, name, applied_at_utc) VALUES (?, ?, ?)",
             (version, name, now_iso),
@@ -464,6 +810,17 @@ def upsert_station_evaluation(conn: sqlite3.Connection, ev: StationAqiEvaluation
         }
         for k, v in ev.pollutant_evaluations.items()
     }
+    # Remove any prior evaluation row for the same (station_id, evaluation_date) that had a different
+    # source_provider or timestamp (e.g., when a hybrid evaluation is recomputed as openaq_v3 or none).
+    conn.execute(
+        """
+        DELETE FROM station_aqi_evaluations
+        WHERE station_id = ?
+          AND evaluation_date = ?
+          AND (evaluation_timestamp_utc != ? OR source_provider != ?)
+        """,
+        (ev.station_id, ev.evaluation_date, ev.evaluation_timestamp_utc, ev.source_provider),
+    )
     conn.execute(
         """
         INSERT INTO station_aqi_evaluations (
