@@ -11,7 +11,7 @@ services:
       - DATA_GOV_IN_API_KEY=${DATA_GOV_IN_API_KEY:-}
       - OPENAQ_API_KEY=${OPENAQ_API_KEY:-}
       - DATABASE_URL=sqlite:////data/districtwatch.db
-      - CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173}
     volumes:
       - districtwatch_data:/data
     restart: unless-stopped

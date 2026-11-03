@@ -7,6 +7,11 @@ import { AqiPill, EmptyState, FreshnessBadge, IllustrativeLabel, QualityIndicato
 
 export function AqiSummaryCard({ snap, showLink }: { snap: DistrictSnapshot; showLink?: boolean }) {
   const b = aqiBand(snap.aqi);
+  const unavailableBody =
+    snap.caveats.length > 0
+      ? `${snap.caveats[0]} We show nothing rather than estimate.`
+      : "No readings were received for this district in the current evaluation window. We show nothing rather than estimate.";
+
   return (
     <section className="surface p-6 md:p-8" aria-label={`AQI summary for ${snap.district.name}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -17,11 +22,13 @@ export function AqiSummaryCard({ snap, showLink }: { snap: DistrictSnapshot; sho
             <MapPin className="size-3.5" aria-hidden /> {snap.district.state} · {snap.district.lat.toFixed(2)}°N, {snap.district.lon.toFixed(2)}°E
           </p>
         </div>
-        <IllustrativeLabel />
+        <IllustrativeLabel show={snap.isIllustrative} />
       </div>
 
       {snap.aqi === null ? (
-        <div className="mt-6"><EmptyState title="AQI unavailable" body="No readings were received for this district in the sample window. We show nothing rather than estimate." /></div>
+        <div className="mt-6">
+          <EmptyState title="AQI unavailable" body={unavailableBody} />
+        </div>
       ) : (
         <div className="mt-8 grid gap-8 md:grid-cols-[auto_1fr] md:items-end">
           <div>
@@ -31,7 +38,7 @@ export function AqiSummaryCard({ snap, showLink }: { snap: DistrictSnapshot; sho
             </div>
             <div className="mt-3 flex items-center gap-2">
               <AqiPill aqi={snap.aqi} size="lg" />
-              <span className="text-sm text-muted-foreground">Dominant: {snap.dominant}</span>
+              <span className="text-sm text-muted-foreground">Dominant: {snap.dominant ?? "—"}</span>
             </div>
           </div>
           <div>

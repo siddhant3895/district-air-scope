@@ -65,14 +65,46 @@ function build(d: (typeof DISTRICTS)[number], idx: number): DistrictSnapshot {
 
 const SNAPSHOTS = DISTRICTS.map(build);
 
+function filterMockSnapshots(filters?: { state?: string; q?: string }) {
+  let list = SNAPSHOTS;
+  if (filters?.state && filters.state.trim()) {
+    const sNorm = filters.state.trim().toLowerCase();
+    list = list.filter((s) => s.district.state.toLowerCase() === sNorm);
+  }
+  if (filters?.q && filters.q.trim()) {
+    const qNorm = filters.q.trim().toLowerCase();
+    list = list.filter(
+      (s) =>
+        s.district.name.toLowerCase().includes(qNorm) ||
+        s.district.state.toLowerCase().includes(qNorm) ||
+        s.district.id.toLowerCase().includes(qNorm)
+    );
+  }
+  return list;
+}
+
 export const mockService: AirQualityService = {
-  async listDistricts() {
-    return SNAPSHOTS.map((s) => s.district);
+  async listDistricts(filters) {
+    return filterMockSnapshots(filters).map((s) => s.district);
   },
   async getSnapshot(id) {
     return SNAPSHOTS.find((s) => s.district.id === id) ?? null;
   },
-  async listSnapshots() {
-    return SNAPSHOTS;
+  async listSnapshots(filters) {
+    return filterMockSnapshots(filters);
+  },
+  async getHealth() {
+    return {
+      status: "ok",
+      phase: "illustrative_mock",
+      liveDataReady: false,
+      cpcbKeyConfigured: false,
+      openaqKeyConfigured: false,
+      districtsTracked: SNAPSHOTS.length,
+      lastIngestedAt: null,
+      lastSyncStatus: "never_run",
+      freshDistrictsCount: 0,
+      providers: {},
+    };
   },
 };

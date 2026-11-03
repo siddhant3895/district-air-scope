@@ -3,16 +3,40 @@ import type { Reading } from "@/data";
 import { aqiBand } from "@/lib/aqi";
 import { EmptyState, IllustrativeLabel, SectionHeader } from "./primitives";
 
-const fmt = (d: string) => new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+export function formatTrendDate(d: string): string {
+  const parts = d.split("-");
+  if (parts.length === 3) {
+    const year = Number(parts[0]);
+    const month = Number(parts[1]) - 1;
+    const day = Number(parts[2]);
+    if (!Number.isNaN(year) && !Number.isNaN(month) && !Number.isNaN(day)) {
+      const utcDate = new Date(Date.UTC(year, month, day));
+      return utcDate.toLocaleDateString("en-IN", {
+        day: "numeric",
+        month: "short",
+        timeZone: "UTC",
+      });
+    }
+  }
+  return new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+}
 
-export function TrendChart({ history, title = "30-day trend" }: { history: Reading[]; title?: string }) {
+export function TrendChart({
+  history,
+  title = "30-day trend",
+  isIllustrative,
+}: {
+  history: Reading[];
+  title?: string;
+  isIllustrative?: boolean;
+}) {
   const valid = history.filter((h) => h.aqi !== null);
   const missing = history.length - valid.length;
   return (
     <section className="surface p-6">
-      <SectionHeader eyebrow="Daily mean AQI" title={title} right={<IllustrativeLabel />} />
+      <SectionHeader eyebrow="Daily mean AQI" title={title} right={<IllustrativeLabel show={isIllustrative} />} />
       {valid.length === 0 ? (
-        <EmptyState title="No trend available" body="There are no readings in this window to chart." />
+        <EmptyState title="No trend available" body="There are no verified readings in this 30-day window to chart." />
       ) : (
         <>
           <div className="h-64 md:h-72" role="img" aria-label={`AQI trend chart, ${valid.length} days with data`}>
@@ -25,14 +49,14 @@ export function TrendChart({ history, title = "30-day trend" }: { history: Readi
                   </linearGradient>
                 </defs>
                 <CartesianGrid stroke="var(--border)" vertical={false} />
-                <XAxis dataKey="date" tickFormatter={fmt} tick={{ fill: "var(--muted-foreground)", fontSize: 12 }} axisLine={{ stroke: "var(--border)" }} tickLine={false} minTickGap={28} />
+                <XAxis dataKey="date" tickFormatter={formatTrendDate} tick={{ fill: "var(--muted-foreground)", fontSize: 12 }} axisLine={{ stroke: "var(--border)" }} tickLine={false} minTickGap={28} />
                 <YAxis tick={{ fill: "var(--muted-foreground)", fontSize: 12 }} axisLine={false} tickLine={false} width={44} />
                 {[100, 200, 300].map((y) => (
                   <ReferenceLine key={y} y={y} stroke="var(--sage)" strokeDasharray="3 4" label={{ value: aqiBand(y + 1)?.label ?? "", position: "insideTopRight", fill: "var(--muted-foreground)", fontSize: 11 }} />
                 ))}
                 <Tooltip
                   contentStyle={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6, fontSize: 12 }}
-                  labelFormatter={(l) => fmt(String(l))}
+                  labelFormatter={(l) => formatTrendDate(String(l))}
                   formatter={(v) => (v === null || v === undefined ? ["Missing", "AQI"] : [`${v} · ${aqiBand(Number(v))?.label}`, "AQI"])}
                 />
                 <Area type="monotone" dataKey="aqi" stroke="var(--terracotta)" strokeWidth={2} fill="url(#dwFill)" connectNulls={false} dot={false} />
