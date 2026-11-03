@@ -139,6 +139,50 @@ MIGRATIONS: Tuple[Tuple[int, str, str], ...] = (
         );
         """,
     ),
+    (
+        3,
+        "003_invalidate_legacy_unverified_cpcb_observations",
+        """
+        UPDATE raw_station_observations
+        SET is_valid = 0,
+            value_kind = 'invalid',
+            normalized_concentration = NULL,
+            normalized_unit = NULL,
+            calculated_sub_index = NULL,
+            validation_note = 'Invalidated by migration 003: unitless or NA-unit CPCB record has unverified scale semantics; raw observation preserved for auditability.'
+        WHERE source_provider = 'cpcb_ogd'
+          AND is_valid = 1
+          AND (
+              raw_unit IS NULL
+              OR TRIM(UPPER(raw_unit)) IN ('', 'NA', 'N/A', 'NONE', 'NULL', '-', 'UNKNOWN')
+          );
+
+        UPDATE station_aqi_evaluations
+        SET station_aqi = NULL,
+            dominant_pollutant = NULL,
+            meets_16h_completeness = 0,
+            meets_3_pollutant_pm_rule = 0,
+            is_valid_station_aqi = 0,
+            valid_pollutant_count = 0,
+            observed_pollutant_hours = 0,
+            rejection_reasons_json = '["Invalidated by migration 003: underlying unitless CPCB observations lack verified unit semantics."]'
+        WHERE source_provider IN ('cpcb_ogd', 'hybrid_cpcb_openaq');
+
+        UPDATE daily_district_history
+        SET district_aqi = NULL,
+            dominant_pollutant = NULL,
+            updated_at_utc = NULL,
+            source_attribution = 'No verified station readings met completeness in window',
+            reporting_stations = 0,
+            observed_station_pollutant_hours = 0,
+            coverage = 0.0,
+            quality = 'unavailable',
+            pollutants_json = '[{"key": "PM2.5", "value": null, "unit": "\u00b5g/m\u00b3", "subIndex": null}, {"key": "PM10", "value": null, "unit": "\u00b5g/m\u00b3", "subIndex": null}, {"key": "NO2", "value": null, "unit": "\u00b5g/m\u00b3", "subIndex": null}, {"key": "SO2", "value": null, "unit": "\u00b5g/m\u00b3", "subIndex": null}, {"key": "O3", "value": null, "unit": "\u00b5g/m\u00b3", "subIndex": null}, {"key": "CO", "value": null, "unit": "mg/m\u00b3", "subIndex": null}]',
+            caveats_json = '["No station readings received for this district in the current window."]'
+        WHERE source_attribution LIKE '%data.gov.in%'
+          AND source_attribution NOT LIKE '%OpenAQ%';
+        """,
+    ),
 )
 
 
@@ -161,6 +205,22 @@ def run_migrations(conn: sqlite3.Connection) -> List[int]:
     for version, name, sql in MIGRATIONS:
         if version in applied_versions:
             continue
+        if version == 3:
+            # Ensure legacy v2 databases that had old ingestion_sync_runs columns are upgraded seamlessly
+            cols = {
+                r["name"]
+                for r in conn.execute("PRAGMA table_info(ingestion_sync_runs)").fetchall()
+            }
+            if cols and "overall_status" not in cols:
+                conn.executescript(
+                    """
+                    ALTER TABLE ingestion_sync_runs ADD COLUMN overall_status TEXT NOT NULL DEFAULT 'failed';
+                    ALTER TABLE ingestion_sync_runs ADD COLUMN cpcb_status TEXT NOT NULL DEFAULT 'not_configured';
+                    ALTER TABLE ingestion_sync_runs ADD COLUMN cpcb_error TEXT;
+                    ALTER TABLE ingestion_sync_runs ADD COLUMN openaq_status TEXT NOT NULL DEFAULT 'not_configured';
+                    ALTER TABLE ingestion_sync_runs ADD COLUMN openaq_error TEXT;
+                    """
+                )
         conn.executescript(sql)
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute(
@@ -312,6 +372,27 @@ def get_latest_station_observation_time(
         WHERE station_id = ? AND source_provider = ? AND is_valid = 1
         """,
         (station_id, source_provider),
+    ).fetchone()
+    return row["max_obs"] if row and row["max_obs"] else None
+
+
+def get_latest_sensor_observation_time(
+    conn: sqlite3.Connection,
+    station_id: str,
+    sensor_id: int,
+) -> Optional[str]:
+    """Return the latest valid observed_at_utc timestamp for a specific OpenAQ sensor at a station."""
+    sensor_prefix = f"openaq_sensor:{int(sensor_id)}:%"
+    row = conn.execute(
+        """
+        SELECT MAX(observed_at_utc) AS max_obs
+        FROM raw_station_observations
+        WHERE station_id = ?
+          AND source_provider = 'openaq_v3'
+          AND is_valid = 1
+          AND upstream_sensor_or_record_id LIKE ?
+        """,
+        (station_id, sensor_prefix),
     ).fetchone()
     return row["max_obs"] if row and row["max_obs"] else None
 

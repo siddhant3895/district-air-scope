@@ -102,8 +102,30 @@ class TestStage7NationwideAndCpcbEvaluation(unittest.TestCase):
         self.assertIsNone(pm25_entry["value"])
         self.assertEqual(pm25_entry["subIndex"], 140)
 
-        # Verify /api/health transitions liveDataReady to True when API key is configured and fresh readings exist
+        # Verify /api/health stays False while provider sync status is never_run, then transitions
+        # liveDataReady to True once a successful sync run is recorded with configured key and fresh readings
         os.environ["DATA_GOV_IN_API_KEY"] = "test-configured-key"
+        health_before_sync = self.client.get("/api/health")
+        self.assertEqual(health_before_sync.status_code, 200)
+        self.assertFalse(health_before_sync.json()["liveDataReady"])
+
+        with get_db_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO ingestion_sync_runs (
+                    started_at_utc, completed_at_utc, overall_status,
+                    cpcb_status, cpcb_observations_ingested, openaq_status
+                )
+                VALUES (?, ?, 'succeeded', 'succeeded', ?, 'not_configured')
+                """,
+                (
+                    now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    len(obs),
+                ),
+            )
+            conn.commit()
+
         health_resp = self.client.get("/api/health")
         self.assertEqual(health_resp.status_code, 200)
         self.assertTrue(health_resp.json()["liveDataReady"])

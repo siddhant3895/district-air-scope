@@ -232,9 +232,9 @@ class TestPriority3IncrementalIngestionRateLimitingAndIsolation(unittest.TestCas
                                     "isMobile": False,
                                     "datetimeLast": {"utc": "2026-11-02T11:00:00Z"},
                                     "sensors": [
-                                        {"id": 501, "parameter": {"name": "pm25", "units": "µg/m³"}},
-                                        {"id": 502, "parameter": {"name": "pm10", "units": "µg/m³"}},
-                                        {"id": 503, "parameter": {"name": "no2", "units": "µg/m³"}},
+                                        {"id": 90011, "parameter": {"name": "pm25", "units": "µg/m³"}},
+                                        {"id": 90012, "parameter": {"name": "pm10", "units": "µg/m³"}},
+                                        {"id": 90013, "parameter": {"name": "no2", "units": "µg/m³"}},
                                     ],
                                 }
                             ]
@@ -327,6 +327,104 @@ class TestPriority3IncrementalIngestionRateLimitingAndIsolation(unittest.TestCas
         self.assertFalse(any(c.startswith("26.8460") for c in discovery_calls))
         # All sensor hour calls for Mandir Marg & Lalbagh on Run 2 use incremental start 2026-11-02T07:00:00Z
         self.assertTrue(all(c["datetime_from"] == "2026-11-02T07:00:00Z" for c in hours_calls))
+
+    def test_sensor_level_incremental_cursor_with_active_and_stale_sensors_at_same_station(self) -> None:
+        """Verify each OpenAQ sensor at the same station tracks its own independent incremental cursor."""
+        os.environ.pop("DATA_GOV_IN_API_KEY", None)
+        os.environ["OPENAQ_API_KEY"] = "openaq-test-key"
+
+        ref_now = datetime(2026, 11, 2, 12, 0, 0, tzinfo=timezone.utc)
+        st = list_verified_stations_for_district("new-delhi")[0]  # Mandir Marg (openaq_location_id=8118)
+
+        # Pre-populate DB at Mandir Marg with:
+        # - Sensor 81181 (PM2.5): fresh observation 2 hours ago (2026-11-02T10:00:00Z)
+        # - Sensor 81182 (PM10): stale observation 10 days ago (2026-10-23T06:00:00Z)
+        # - Sensor 81183 (NO2): no prior observations in DB (must get full 30-day backfill: 2026-10-03T12:00:00Z)
+        with get_db_connection() as conn:
+            seed_registry(conn)
+            insert_raw_observations(
+                conn,
+                [
+                    RawStationObservation(
+                        station_id=st.station_id,
+                        source_provider="openaq_v3",
+                        upstream_sensor_or_record_id="openaq_sensor:81181:2026-11-02T10:00:00Z",
+                        pollutant_key="PM2.5",
+                        observed_at_utc="2026-11-02T10:00:00Z",
+                        window_hours=1,
+                        raw_value_text="55.0",
+                        raw_unit="µg/m³",
+                        value_kind="concentration",
+                        normalized_concentration=55.0,
+                        normalized_unit="µg/m³",
+                        calculated_sub_index=92,
+                        is_valid=True,
+                        validation_note="ok",
+                        raw_payload_json="{}",
+                        ingested_at_utc="2026-11-02T10:05:00Z",
+                    ),
+                    RawStationObservation(
+                        station_id=st.station_id,
+                        source_provider="openaq_v3",
+                        upstream_sensor_or_record_id="openaq_sensor:81182:2026-10-23T06:00:00Z",
+                        pollutant_key="PM10",
+                        observed_at_utc="2026-10-23T06:00:00Z",
+                        window_hours=1,
+                        raw_value_text="120.0",
+                        raw_unit="µg/m³",
+                        value_kind="concentration",
+                        normalized_concentration=120.0,
+                        normalized_unit="µg/m³",
+                        calculated_sub_index=113,
+                        is_valid=True,
+                        validation_note="ok",
+                        raw_payload_json="{}",
+                        ingested_at_utc="2026-10-23T06:05:00Z",
+                    ),
+                ],
+            )
+            conn.commit()
+
+        sensor_windows_requested: Dict[int, str] = {}
+
+        class SensorWindowSpyClient:
+            def get_json(
+                self, url: str, *, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None
+            ) -> Dict[str, Any]:
+                if "/v3/locations/8118" in url:
+                    return {
+                        "results": [
+                            {
+                                "id": 8118,
+                                "name": "Mandir Marg",
+                                "isMonitor": True,
+                                "isMobile": False,
+                                "datetimeLast": {"utc": "2026-11-02T11:00:00Z"},
+                                "sensors": [
+                                    {"id": 81181, "parameter": {"name": "pm25", "units": "µg/m³"}},
+                                    {"id": 81182, "parameter": {"name": "pm10", "units": "µg/m³"}},
+                                    {"id": 81183, "parameter": {"name": "no2", "units": "µg/m³"}},
+                                ],
+                            }
+                        ]
+                    }
+                if "/v3/locations" in url:
+                    return {"results": []}
+                if "/v3/sensors/" in url and url.endswith("/hours"):
+                    sensor_id = int(url.split("/v3/sensors/")[1].split("/hours")[0])
+                    sensor_windows_requested[sensor_id] = str((params or {}).get("datetime_from"))
+                    return {"results": []}
+                return {}
+
+        res = run_sync(days=30, overlap_hours=3, now_utc=ref_now, http_client=SensorWindowSpyClient())
+        self.assertEqual(res["openaq_status"], "succeeded")
+
+        # Sensor 81181 (active 2h ago at 10:00Z) -> 10:00Z - 3h overlap = 2026-11-02T07:00:00Z
+        self.assertEqual(sensor_windows_requested.get(81181), "2026-11-02T07:00:00Z")
+        # Sensor 81182 (stale 10 days ago at 2026-10-23T06:00Z) -> 2026-10-23T06:00Z - 3h = 2026-10-23T03:00:00Z
+        self.assertEqual(sensor_windows_requested.get(81182), "2026-10-23T03:00:00Z")
+        # Sensor 81183 (no prior observations) -> full 30-day backfill = 2026-10-03T12:00:00Z
+        self.assertEqual(sensor_windows_requested.get(81183), "2026-10-03T12:00:00Z")
 
 
 class TestPriority4CalculationProvenanceAndIstBoundaries(unittest.TestCase):
@@ -504,6 +602,68 @@ class TestPriority5ApiHealthFreshnessAndProviderIsolation(unittest.TestCase):
         self.assertEqual(resp_fresh["providers"]["cpcb_ogd"]["lastSyncError"], "CPCB 503 error")
         self.assertEqual(resp_fresh["providers"]["openaq_v3"]["lastSyncStatus"], "succeeded")
         self.assertTrue(resp_fresh["providers"]["openaq_v3"]["hasFreshData"])
+
+    def test_health_never_run_and_all_failed_never_qualify_even_with_fresh_records(self) -> None:
+        """Verify never_run and failed sync statuses never produce liveDataReady=True even when fresh DB rows exist."""
+        st = list_verified_stations_for_district("new-delhi")[0]
+        now_utc = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        fresh_end = now_utc - timedelta(hours=1)
+
+        fresh_obs = []
+        for h in range(18):
+            ts = (fresh_end - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            for p_key, val in [("PM2.5", 60.0), ("PM10", 100.0), ("NO2", 40.0)]:
+                fresh_obs.append(
+                    RawStationObservation(
+                        station_id=st.station_id,
+                        source_provider="openaq_v3",
+                        upstream_sensor_or_record_id=f"openaq_sensor:81181:{p_key}:{ts}",
+                        pollutant_key=p_key,  # type: ignore[arg-type]
+                        observed_at_utc=ts,
+                        window_hours=1,
+                        raw_value_text=str(val),
+                        raw_unit="µg/m³",
+                        value_kind="concentration",
+                        normalized_concentration=val,
+                        normalized_unit="µg/m³",
+                        calculated_sub_index=100,
+                        is_valid=True,
+                        validation_note="ok",
+                        raw_payload_json="{}",
+                        ingested_at_utc=ts,
+                    )
+                )
+
+        with get_db_connection() as conn:
+            seed_registry(conn)
+            insert_raw_observations(conn, fresh_obs)
+            recompute_district_history_window(conn, anchor_date_str=format_ist_date(fresh_end), days=2)
+
+        # Scenario 1: Keys configured + fresh valid observations + fresh district AQI, but NO sync run (never_run)
+        resp_never_run = self.client.get("/api/health").json()
+        self.assertEqual(resp_never_run["lastSyncStatus"], "never_run")
+        self.assertEqual(resp_never_run["freshDistrictsCount"], 1)
+        self.assertEqual(resp_never_run["providers"]["openaq_v3"]["lastSyncStatus"], "never_run")
+        self.assertTrue(resp_never_run["providers"]["openaq_v3"]["hasFreshData"])
+        self.assertFalse(resp_never_run["liveDataReady"])
+
+        # Scenario 2: Sync run recorded where both providers failed -> liveDataReady must still be False
+        with get_db_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO ingestion_sync_runs (
+                    started_at_utc, completed_at_utc, overall_status,
+                    cpcb_status, cpcb_error, openaq_status, openaq_error
+                )
+                VALUES (?, ?, 'failed', 'failed', 'CPCB 503', 'failed', 'OpenAQ 500')
+                """,
+                (fresh_end.strftime("%Y-%m-%dT%H:%M:%SZ"), fresh_end.strftime("%Y-%m-%dT%H:%M:%SZ")),
+            )
+            conn.commit()
+
+        resp_failed = self.client.get("/api/health").json()
+        self.assertEqual(resp_failed["lastSyncStatus"], "failed")
+        self.assertFalse(resp_failed["liveDataReady"])
 
 
 
@@ -764,6 +924,205 @@ class TestSharedHttpRateLimitingAcrossSync(unittest.TestCase):
         self.assertIn(2.0, sleeps)
         # Across 2 runs, CPCB attempted 3 times per run = 6 total attempts
         self.assertEqual(cpcb_attempts[0], 6)
+
+
+
+
+class TestLegacyUnverifiedCpcbMigrationAndRecomputation(unittest.TestCase):
+    """Regression tests for Migration 003 invalidating legacy unitless CPCB rows and clearing stale derived AQIs."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.temp_dir.name, "test_legacy_cpcb.db")
+        self.prev_db_url = os.environ.get("DATABASE_URL")
+        os.environ["DATABASE_URL"] = f"sqlite:///{self.db_path}"
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        if self.prev_db_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = self.prev_db_url
+        self.temp_dir.cleanup()
+
+    def test_migration_003_invalidates_legacy_unitless_cpcb_rows_and_preserves_audit_trail(self) -> None:
+        """Verify a pre-003 database with accepted unitless CPCB rows is safely invalidated without deleting raw rows."""
+        from app.migrations import MIGRATIONS, run_migrations, upsert_daily_district_history, upsert_districts, upsert_stations
+        from app.models import DailyDistrictHistoryRecord
+        from app.districts_registry import list_target_districts, REVIEWED_STATIONS
+
+        with get_db_connection() as conn:
+            # Simulate a pre-003 database by applying only migrations 1 and 2
+            for version, name, sql in MIGRATIONS[:2]:
+                conn.executescript(sql)
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at_utc) VALUES (?, ?, ?)",
+                    (version, name, "2026-11-01T00:00:00Z"),
+                )
+            upsert_districts(conn, list_target_districts())
+            upsert_stations(conn, REVIEWED_STATIONS)
+
+            # Insert 72 legacy unitless CPCB observations (accepted by old normalizer with is_valid=1, value_kind='sub_index')
+            # plus 1 verified concentration CPCB observation (raw_unit='µg/m³') that MUST remain valid
+            st = list_verified_stations_for_district("new-delhi")[0]
+            base_dt = datetime(2026, 11, 2, 12, 0, 0, tzinfo=timezone.utc)
+            legacy_obs = []
+            for h in range(18):
+                ts = (base_dt - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                for idx, p_key in enumerate(("PM2.5", "PM10", "NO2", "SO2")):
+                    legacy_obs.append(
+                        RawStationObservation(
+                            station_id=st.station_id,
+                            source_provider="cpcb_ogd",
+                            upstream_sensor_or_record_id=f"legacy:{p_key}:{ts}",
+                            pollutant_key=p_key,  # type: ignore[arg-type]
+                            observed_at_utc=ts,
+                            window_hours=24,
+                            raw_value_text="218",
+                            raw_unit=None if idx % 2 == 0 else "NA",
+                            value_kind="sub_index",
+                            normalized_concentration=None,
+                            normalized_unit=None,
+                            calculated_sub_index=218,
+                            is_valid=True,
+                            validation_note="Legacy accepted unitless CPCB sub-index",
+                            raw_payload_json='{"pollutant_avg":"218","pollutant_unit":"NA"}',
+                            ingested_at_utc=ts,
+                        )
+                    )
+            # Also add 1 explicitly unit-verified CPCB observation
+            legacy_obs.append(
+                RawStationObservation(
+                    station_id=st.station_id,
+                    source_provider="cpcb_ogd",
+                    upstream_sensor_or_record_id="verified:CO:2026-11-02T12:00:00Z",
+                    pollutant_key="CO",
+                    observed_at_utc="2026-11-02T12:00:00Z",
+                    window_hours=8,
+                    raw_value_text="1.2",
+                    raw_unit="mg/m³",
+                    value_kind="concentration",
+                    normalized_concentration=1.2,
+                    normalized_unit="mg/m³",
+                    calculated_sub_index=60,
+                    is_valid=True,
+                    validation_note="Verified mg/m³",
+                    raw_payload_json='{"pollutant_avg":"1.2","pollutant_unit":"mg/m³"}',
+                    ingested_at_utc="2026-11-02T12:00:00Z",
+                )
+            )
+            insert_raw_observations(conn, legacy_obs)
+
+            # Insert a stale derived daily_district_history record from those legacy CPCB rows
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="new-delhi",
+                    date="2026-11-02",
+                    district_aqi=218,
+                    dominant_pollutant="PM2.5",
+                    updated_at_utc="2026-11-02T12:00:00Z",
+                    source_attribution="CPCB / SPCB CAAQMS via data.gov.in (GODL-India)",
+                    reporting_stations=1,
+                    registered_stations=6,
+                    observed_station_pollutant_hours=96,
+                    expected_station_pollutant_hours=672,
+                    coverage=round(96 / 672, 4),
+                    quality="low",
+                    pollutants_json='[{"key":"PM2.5","value":null,"unit":"µg/m³","subIndex":218}]',
+                    caveats_json="[]",
+                ),
+            )
+            conn.commit()
+
+            # Now run migrations -> Migration 3 must apply and be idempotent on subsequent calls
+            newly_applied = run_migrations(conn)
+            self.assertEqual(newly_applied, [3])
+            self.assertEqual(run_migrations(conn), [])
+
+            # 1. Verify NO raw observations were deleted (all 73 rows preserved for auditability)
+            total_rows = conn.execute("SELECT COUNT(*) AS cnt FROM raw_station_observations").fetchone()["cnt"]
+            self.assertEqual(total_rows, 73)
+
+            # 2. Verify all 72 unitless/NA CPCB rows were invalidated (is_valid=0, calculated_sub_index=NULL)
+            invalidated_rows = conn.execute(
+                """
+                SELECT COUNT(*) AS cnt FROM raw_station_observations
+                WHERE source_provider = 'cpcb_ogd'
+                  AND upstream_sensor_or_record_id LIKE 'legacy:%'
+                  AND is_valid = 0
+                  AND value_kind = 'invalid'
+                  AND calculated_sub_index IS NULL
+                """
+            ).fetchone()["cnt"]
+            self.assertEqual(invalidated_rows, 72)
+
+            # 3. Verify the 1 CPCB row with an explicit physical unit ('mg/m³') was NOT invalidated
+            verified_row = conn.execute(
+                "SELECT is_valid, calculated_sub_index FROM raw_station_observations WHERE upstream_sensor_or_record_id = 'verified:CO:2026-11-02T12:00:00Z'"
+            ).fetchone()
+            self.assertEqual(verified_row["is_valid"], 1)
+            self.assertEqual(verified_row["calculated_sub_index"], 60)
+
+            # 4. Run recompute_district_history_window -> must not leave stale 218 AQI on 2026-11-02
+            recompute_district_history_window(conn, anchor_date_str="2026-11-02", days=2)
+
+            hist_after = conn.execute(
+                "SELECT * FROM daily_district_history WHERE district_id = 'new-delhi' AND date = '2026-11-02'"
+            ).fetchone()
+            self.assertIsNotNone(hist_after)
+            self.assertIsNone(hist_after["district_aqi"])
+            self.assertEqual(hist_after["quality"], "unavailable")
+            self.assertEqual(hist_after["reporting_stations"], 0)
+
+        # Verify public API snapshot for new-delhi on 2026-11-02 reflects unavailable (no stale AQI)
+        snap = self.client.get("/api/snapshots/new-delhi?anchor_date=2026-11-02").json()
+        self.assertIsNone(snap["aqi"])
+        self.assertEqual(snap["quality"], "unavailable")
+        self.assertEqual(snap["stations"], 0)
+
+    def test_recompute_clears_stale_district_aqi_when_all_observations_on_day_become_invalid(self) -> None:
+        """Verify recompute_district_history_window clears an existing daily AQI even when valid_day_obs is empty."""
+        from app.migrations import upsert_daily_district_history
+        from app.models import DailyDistrictHistoryRecord
+
+        with get_db_connection() as conn:
+            seed_registry(conn)
+            # Pre-existing daily history record on 2026-11-02 with district_aqi=175, but 0 valid observations in DB
+            upsert_daily_district_history(
+                conn,
+                DailyDistrictHistoryRecord(
+                    district_id="lucknow",
+                    date="2026-11-02",
+                    district_aqi=175,
+                    dominant_pollutant="PM2.5",
+                    updated_at_utc="2026-11-02T10:00:00Z",
+                    source_attribution="CPCB / SPCB CAAQMS via OpenAQ v3",
+                    reporting_stations=2,
+                    registered_stations=4,
+                    observed_station_pollutant_hours=180,
+                    expected_station_pollutant_hours=448,
+                    coverage=round(180 / 448, 4),
+                    quality="medium",
+                    pollutants_json='[{"key":"PM2.5","value":82.0,"unit":"µg/m³","subIndex":175}]',
+                    caveats_json="[]",
+                ),
+            )
+            conn.commit()
+
+            # Recompute across 2026-11-02 when no valid observations remain for Lucknow
+            recompute_district_history_window(conn, anchor_date_str="2026-11-02", days=2)
+
+            row = conn.execute(
+                "SELECT * FROM daily_district_history WHERE district_id = 'lucknow' AND date = '2026-11-02'"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertIsNone(row["district_aqi"])
+            self.assertIsNone(row["dominant_pollutant"])
+            self.assertIsNone(row["updated_at_utc"])
+            self.assertEqual(row["reporting_stations"], 0)
+            self.assertEqual(row["coverage"], 0.0)
+            self.assertEqual(row["quality"], "unavailable")
 
 
 if __name__ == "__main__":

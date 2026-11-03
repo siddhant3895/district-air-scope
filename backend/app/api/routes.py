@@ -190,10 +190,11 @@ def get_health() -> HealthResponse:
     }
 
     # liveDataReady is True ONLY when:
-    # 1. At least one configured provider has fresh valid observations and has not failed its latest sync, AND
-    # 2. At least one district has a fresh, non-stale daily AQI evaluation.
+    # 1. At least one configured provider has completed a successful sync (lastSyncStatus == "succeeded")
+    #    and has fresh valid observations (hasFreshData == True), AND
+    # 2. At least one district has a fresh, non-stale daily AQI evaluation (fresh_districts_count > 0).
     any_provider_healthy = any(
-        p.configured and p.lastSyncStatus in ("succeeded", "never_run") and p.hasFreshData
+        p.configured and p.lastSyncStatus == "succeeded" and p.hasFreshData
         for p in providers.values()
     )
     live_data_ready = bool(any_provider_healthy and fresh_districts_count > 0)

@@ -29,6 +29,7 @@ from app.ingestion.openaq_adapter import (
     validate_openaq_location,
 )
 from app.migrations import (
+    get_latest_sensor_observation_time,
     get_latest_station_observation_time,
     insert_raw_observations,
     load_stations_from_db,
@@ -133,6 +134,26 @@ def recompute_district_history_window(
             )
             valid_day_obs = [o for o in day_obs if o.is_valid]
             if not valid_day_obs:
+                existing_daily = conn.execute(
+                    "SELECT 1 FROM daily_district_history WHERE district_id = ? AND date = ?",
+                    (district.id, target_ist_date),
+                ).fetchone()
+                if existing_daily is not None:
+                    invalidated_rec = aggregate_district_for_date(
+                        district=district,
+                        registered_stations=verified_stations,
+                        station_evaluations=[],
+                        evaluation_date=target_ist_date,
+                        updated_at_utc=None,
+                        source_attribution="auto",
+                        now_utc=ist_day_end_utc,
+                    )
+                    upsert_daily_district_history(conn, invalidated_rec)
+                    conn.execute(
+                        "DELETE FROM station_aqi_evaluations WHERE district_id = ? AND evaluation_date = ?",
+                        (district.id, target_ist_date),
+                    )
+                    updated_records += 1
                 continue
 
             # Anchor the 24-hour CPCB rolling evaluation window to the latest valid observation on that IST day
@@ -148,8 +169,6 @@ def recompute_district_history_window(
                 eval_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 eval_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
             )
-            if not obs:
-                continue
 
             station_evals = []
             latest_obs_utc: Optional[str] = None
@@ -301,24 +320,23 @@ def run_sync(
                     if not val_res.is_available:
                         continue
 
-                    # Incremental vs initial backfill window calculation for this station
-                    last_obs_str = get_latest_station_observation_time(
-                        conn, st.station_id, "openaq_v3"
-                    )
-                    if last_obs_str:
-                        last_obs_dt = datetime.fromisoformat(
-                            last_obs_str.replace("Z", "+00:00")
-                        ).astimezone(timezone.utc)
-                        station_start_dt = max(
-                            full_backfill_start,
-                            last_obs_dt - timedelta(hours=inc_overlap_hours),
-                        )
-                    else:
-                        station_start_dt = full_backfill_start
-
-                    start_utc_str = station_start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
                     for pollutant_key, sensor in val_res.valid_sensors.items():
+                        # Incremental vs initial backfill window calculated independently per OpenAQ sensor
+                        last_sensor_obs_str = get_latest_sensor_observation_time(
+                            conn, st.station_id, sensor.sensor_id
+                        )
+                        if last_sensor_obs_str:
+                            last_sensor_obs_dt = datetime.fromisoformat(
+                                last_sensor_obs_str.replace("Z", "+00:00")
+                            ).astimezone(timezone.utc)
+                            sensor_start_dt = max(
+                                full_backfill_start,
+                                last_sensor_obs_dt - timedelta(hours=inc_overlap_hours),
+                            )
+                        else:
+                            sensor_start_dt = full_backfill_start
+
+                        start_utc_str = sensor_start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
                         hours_payload = fetch_openaq_sensor_hours(
                             settings.openaq_api_key,
                             sensor.sensor_id,
