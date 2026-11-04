@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional
 from app.schemas import PollutantKey, QualityLevel
 
-SourceProvider = Literal["cpcb_ogd", "openaq_v3"]
-ValueKind = Literal["concentration", "sub_index", "missing", "invalid"]
+SourceProvider = Literal["cpcb_ogd", "openaq_v3", "hybrid_cpcb_openaq", "none"]
+ValueKind = Literal["concentration", "sub_index", "unverified_scale", "missing", "invalid"]
 
 
 @dataclass(frozen=True)
@@ -97,3 +97,18 @@ class DailyDistrictHistoryRecord:
     quality: QualityLevel
     pollutants_json: str
     caveats_json: str
+
+
+@dataclass(frozen=True)
+class SyncRunRecord:
+    id: int
+    started_at_utc: str
+    completed_at_utc: Optional[str]
+    overall_status: str
+    cpcb_status: str
+    cpcb_observations_ingested: int
+    cpcb_error: Optional[str]
+    openaq_status: str
+    openaq_observations_ingested: int
+    openaq_error: Optional[str]
+    daily_district_records_updated: int

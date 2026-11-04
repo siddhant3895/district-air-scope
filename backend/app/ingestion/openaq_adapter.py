@@ -229,15 +229,58 @@ def parse_openaq_hourly_payload(
     return observations
 
 
-def fetch_openaq_location(api_key: str, location_id: int, timeout_sec: float = 20.0) -> Dict[str, Any]:
-    """Fetch location metadata from OpenAQ v3."""
+def fetch_openaq_location(
+    api_key: str,
+    location_id: int,
+    timeout_sec: float = 20.0,
+    http_client: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Fetch location metadata from OpenAQ v3 with rate-limiting and retry."""
     if not api_key or not api_key.strip():
         raise ValueError("OPENAQ_API_KEY is required to query OpenAQ v3.")
+    from app.config import get_settings
+    from app.ingestion.http_utils import RateLimitedHttpClient
+
+    settings = get_settings()
+    client = http_client or RateLimitedHttpClient(
+        min_interval_sec=settings.min_request_interval_sec,
+        max_retries=settings.max_http_retries,
+        timeout_sec=timeout_sec,
+    )
     headers = {"X-API-Key": api_key.strip(), "Accept": "application/json"}
-    with httpx.Client(timeout=timeout_sec) as client:
-        resp = client.get(f"{OPENAQ_V3_BASE_URL}/locations/{location_id}", headers=headers)
-        resp.raise_for_status()
-        return resp.json()
+    return client.get_json(f"{OPENAQ_V3_BASE_URL}/locations/{location_id}", headers=headers)
+
+
+def discover_openaq_locations_near_coordinates(
+    api_key: str,
+    *,
+    lat: float,
+    lon: float,
+    radius_meters: int = 2500,
+    limit: int = 10,
+    timeout_sec: float = 20.0,
+    http_client: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Discover OpenAQ v3 reference locations within `radius_meters` of a verified station's coordinates."""
+    if not api_key or not api_key.strip():
+        raise ValueError("OPENAQ_API_KEY is required to query OpenAQ v3.")
+    from app.config import get_settings
+    from app.ingestion.http_utils import RateLimitedHttpClient
+
+    settings = get_settings()
+    client = http_client or RateLimitedHttpClient(
+        min_interval_sec=settings.min_request_interval_sec,
+        max_retries=settings.max_http_retries,
+        timeout_sec=timeout_sec,
+    )
+    headers = {"X-API-Key": api_key.strip(), "Accept": "application/json"}
+    params: Dict[str, Any] = {
+        "coordinates": f"{lat:.4f},{lon:.4f}",
+        "radius": min(25000, max(100, radius_meters)),
+        "iso": "IN",
+        "limit": min(100, max(1, limit)),
+    }
+    return client.get_json(f"{OPENAQ_V3_BASE_URL}/locations", headers=headers, params=params)
 
 
 def fetch_openaq_sensor_hours(
@@ -248,21 +291,28 @@ def fetch_openaq_sensor_hours(
     datetime_to_utc: str,
     limit: int = 1000,
     timeout_sec: float = 25.0,
+    http_client: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Fetch hourly aggregated sensor observations from OpenAQ v3."""
+    """Fetch hourly aggregated sensor observations from OpenAQ v3 with rate-limiting and retry."""
     if not api_key or not api_key.strip():
         raise ValueError("OPENAQ_API_KEY is required to query OpenAQ v3.")
+    from app.config import get_settings
+    from app.ingestion.http_utils import RateLimitedHttpClient
+
+    settings = get_settings()
+    client = http_client or RateLimitedHttpClient(
+        min_interval_sec=settings.min_request_interval_sec,
+        max_retries=settings.max_http_retries,
+        timeout_sec=timeout_sec,
+    )
     headers = {"X-API-Key": api_key.strip(), "Accept": "application/json"}
     params = {
         "datetime_from": datetime_from_utc,
         "datetime_to": datetime_to_utc,
         "limit": min(1000, max(1, limit)),
     }
-    with httpx.Client(timeout=timeout_sec) as client:
-        resp = client.get(
-            f"{OPENAQ_V3_BASE_URL}/sensors/{sensor_id}/hours",
-            headers=headers,
-            params=params,
-        )
-        resp.raise_for_status()
-        return resp.json()
+    return client.get_json(
+        f"{OPENAQ_V3_BASE_URL}/sensors/{sensor_id}/hours",
+        headers=headers,
+        params=params,
+    )

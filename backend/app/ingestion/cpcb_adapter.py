@@ -2,6 +2,15 @@
 
 Resource ID: 3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69
 License: Government Open Data License - India (GODL-India)
+
+Data Integrity Note on CPCB OGD `pollutant_avg`:
+Official `data.gov.in` records for resource `3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69`
+populate `pollutant_unit` as literal `'NA'` (or omit it) without specifying in the
+schema whether `pollutant_avg` is a raw concentration or a pre-calculated CPCB sub-index.
+To prevent silent AQI corruption, `parse_cpcb_ogd_payload` delegates to
+`normalize_upstream_observation`, which marks unitless/'NA'-unit records as
+`value_kind='unverified_scale'` and `is_valid=False` while retaining the raw observation
+in SQLite for auditability.
 """
 from __future__ import annotations
 
@@ -9,8 +18,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
 from typing import Any, Dict, List, Optional
-import httpx
+from app.config import get_settings
 from app.districts_registry import resolve_reviewed_station
+from app.ingestion.http_utils import RateLimitedHttpClient
 from app.models import RawStationObservation
 from app.schemas import PollutantKey
 from app.services.unit_normalizer import normalize_upstream_observation
@@ -49,6 +59,7 @@ class CpcbParseAuditReport:
     excluded_non_member_stations: List[str] = field(default_factory=list)
     unmapped_stations: List[str] = field(default_factory=list)
     ignored_pollutants: List[str] = field(default_factory=list)
+    unverified_unitless_count: int = 0
     invalid_or_missing_count: int = 0
 
 
@@ -71,12 +82,7 @@ def parse_cpcb_ogd_payload(
     payload: Dict[str, Any],
     ingested_at_utc: Optional[str] = None,
 ) -> CpcbParseAuditReport:
-    """Parse a raw data.gov.in CPCB response payload into audited RawStationObservation records.
-
-    - Strictly filters stations through the reviewed geographic membership registry.
-    - Checks upstream unit fields (`pollutant_unit` / `unit`) and never assumes `pollutant_avg`
-      is a concentration unless an explicit physical concentration unit is present.
-    """
+    """Parse a raw data.gov.in CPCB response payload into audited RawStationObservation records."""
     report = CpcbParseAuditReport()
     ingested_iso = ingested_at_utc or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     records = payload.get("records", [])
@@ -128,7 +134,9 @@ def parse_cpcb_ogd_payload(
             explicit_value_kind=str(explicit_kind) if explicit_kind else None,
         )
 
-        if not norm.is_valid:
+        if norm.value_kind == "invalid" and (raw_unit_str is None or raw_unit_str.upper() in {"NA", "N/A", ""}):
+            report.unverified_unitless_count += 1
+        elif not norm.is_valid:
             report.invalid_or_missing_count += 1
 
         window_hours = int(row.get("window_hours") or CPCB_WINDOW_HOURS[pollutant_key])
@@ -167,10 +175,17 @@ def fetch_cpcb_ogd_page(
     limit: int = 1000,
     offset: int = 0,
     timeout_sec: float = 20.0,
+    http_client: Optional[RateLimitedHttpClient] = None,
 ) -> Dict[str, Any]:
-    """Fetch a single paginated response from data.gov.in CPCB resource."""
+    """Fetch a single paginated response from data.gov.in CPCB resource with rate-limiting and retry."""
     if not api_key or not api_key.strip():
         raise ValueError("DATA_GOV_IN_API_KEY is required to fetch live CPCB data.")
+    settings = get_settings()
+    client = http_client or RateLimitedHttpClient(
+        min_interval_sec=settings.min_request_interval_sec,
+        max_retries=settings.max_http_retries,
+        timeout_sec=timeout_sec,
+    )
     params: Dict[str, Any] = {
         "api-key": api_key.strip(),
         "format": "json",
@@ -182,7 +197,4 @@ def fetch_cpcb_ogd_page(
     if city:
         params["filters[city]"] = city
 
-    with httpx.Client(timeout=timeout_sec) as client:
-        resp = client.get(CPCB_OGD_RESOURCE_URL, params=params)
-        resp.raise_for_status()
-        return resp.json()
+    return client.get_json(CPCB_OGD_RESOURCE_URL, params=params)

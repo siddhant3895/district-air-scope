@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+  backend-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATA_GOV_IN_API_KEY=${DATA_GOV_IN_API_KEY:-}
+      - OPENAQ_API_KEY=${OPENAQ_API_KEY:-}
+      - DATABASE_URL=sqlite:////data/districtwatch.db
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173}
+    volumes:
+      - districtwatch_data:/data
+    restart: unless-stopped
+
+  ingestion-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - DATA_GOV_IN_API_KEY=${DATA_GOV_IN_API_KEY:-}
+      - OPENAQ_API_KEY=${OPENAQ_API_KEY:-}
+      - DATABASE_URL=sqlite:////data/districtwatch.db
+    volumes:
+      - districtwatch_data:/data
+    depends_on:
+      - backend-api
+    entrypoint: ["sh", "-c", "while true; do python -m app.cli sync --days 30; sleep 1800; done"]
+    restart: unless-stopped
+
+volumes:
+  districtwatch_data:
