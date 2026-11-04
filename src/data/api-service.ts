@@ -19,12 +19,12 @@ function resolveBaseUrl(baseUrl: string): string {
   }
   // During SSR / Node execution where relative URLs ("/api") require an origin,
   // resolve against VITE_BACKEND_ORIGIN or http://localhost:8000.
-  if (typeof window === "undefined") {
-    const proc = (
-      globalThis as unknown as {
-        process?: { env?: Record<string, string | undefined> };
-      }
-    ).process;
+  const proc = (
+    globalThis as unknown as {
+      process?: { env?: Record<string, string | undefined>; versions?: { node?: string } };
+    }
+  ).process;
+  if (typeof window === "undefined" || Boolean(proc?.versions?.node)) {
     const serverOrigin = proc?.env?.["VITE_BACKEND_ORIGIN"] || "http://localhost:8000";
     const cleanOrigin = serverOrigin.replace(/\/+$/, "");
     const cleanPath = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;

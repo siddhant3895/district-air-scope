@@ -41,7 +41,7 @@ class TestStage2CpcbAdapterAndStationRegistry(unittest.TestCase):
 
     def test_cpcb_ogd_fixture_parsing_and_neighbor_station_exclusions(self) -> None:
         """Verify CPCB OGD parsing rejects unitless rows safely and excludes neighboring-district stations."""
-        payload = json.loads((FIXTURES_DIR / "cpcb_ogd_sample.json").read_text())
+        payload = json.loads((FIXTURES_DIR / "cpcb_ogd_sample.json").read_text(encoding="utf-8"))
         report = parse_cpcb_ogd_payload(payload, ingested_at_utc="2026-11-02T06:00:00Z")
 
         self.assertEqual(report.total_records_seen, 9)
