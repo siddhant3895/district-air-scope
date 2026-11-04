@@ -1,12 +1,11 @@
 """Environment configuration and settings for DistrictWatch backend."""
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env from backend directory if present
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(_BACKEND_DIR / ".env")
 
@@ -26,6 +25,18 @@ class Settings:
     )
     stale_threshold_hours: float = field(
         default_factory=lambda: float(os.getenv("STALE_THRESHOLD_HOURS", "6.0"))
+    )
+    initial_backfill_days: int = field(
+        default_factory=lambda: int(os.getenv("INITIAL_BACKFILL_DAYS", "30"))
+    )
+    incremental_overlap_hours: int = field(
+        default_factory=lambda: int(os.getenv("INCREMENTAL_SYNC_OVERLAP_HOURS", "3"))
+    )
+    min_request_interval_sec: float = field(
+        default_factory=lambda: float(os.getenv("MIN_REQUEST_INTERVAL_SEC", "1.0"))
+    )
+    max_http_retries: int = field(
+        default_factory=lambda: int(os.getenv("MAX_HTTP_RETRIES", "3"))
     )
     cors_origins: list[str] = field(
         default_factory=lambda: [

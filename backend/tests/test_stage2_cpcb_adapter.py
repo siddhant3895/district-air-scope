@@ -1,4 +1,4 @@
-"""Stage 2 tests: Verify CPCB adapter parsing, reviewed station membership exclusions, and unit semantics."""
+"""Stage 2 tests: Verify CPCB adapter parsing, reviewed station membership exclusions, and safe unit semantics."""
 from __future__ import annotations
 
 import json
@@ -33,7 +33,6 @@ class TestStage2CpcbAdapterAndStationRegistry(unittest.TestCase):
                 f"Expected {expected_count} verified stations for {district_id}, got {len(verified)}",
             )
 
-        # Verify Chennai specifically has 9 total CPCB directory entries (8 verified + 1 Ennore border excluded)
         all_chennai = [s for s in REVIEWED_STATIONS if s.district_id == "chennai"]
         self.assertEqual(len(all_chennai), 9)
         excluded_chennai = [s for s in all_chennai if not s.is_verified_member]
@@ -41,12 +40,11 @@ class TestStage2CpcbAdapterAndStationRegistry(unittest.TestCase):
         self.assertEqual(excluded_chennai[0].external_station_id, "Gandhi Nagar_Ennore, Chennai - TNPCB")
 
     def test_cpcb_ogd_fixture_parsing_and_neighbor_station_exclusions(self) -> None:
-        """Verify CPCB OGD parsing preserves sub-index semantics and excludes neighboring-district stations."""
+        """Verify CPCB OGD parsing rejects unitless rows safely and excludes neighboring-district stations."""
         payload = json.loads((FIXTURES_DIR / "cpcb_ogd_sample.json").read_text())
         report = parse_cpcb_ogd_payload(payload, ingested_at_utc="2026-11-02T06:00:00Z")
 
         self.assertEqual(report.total_records_seen, 9)
-        # ITO (Central Delhi), Colaba (Mumbai City), Bidhannagar (North 24 Parganas), and Ennore (Chennai border) must be excluded
         self.assertEqual(
             set(report.excluded_non_member_stations),
             {
@@ -56,26 +54,24 @@ class TestStage2CpcbAdapterAndStationRegistry(unittest.TestCase):
                 "Gandhi Nagar_Ennore, Chennai - TNPCB",
             },
         )
-        # NH3 is ignored because it is not in the 6 frontend PollutantKeys
         self.assertIn("NH3", report.ignored_pollutants)
-
-        # Accepted observations: 3 from Mandir Marg (PM2.5, PM10, SO2='NA') + 1 from IGSC Patna (PM2.5) = 4
         self.assertEqual(len(report.accepted_observations), 4)
+        self.assertEqual(report.unverified_unitless_count, 3)
 
         mandir_pm25 = next(
             o
             for o in report.accepted_observations
             if o.station_id == "cpcb:new-delhi:mandir-marg" and o.pollutant_key == "PM2.5"
         )
-        # Crucial check: unitless CPCB OGD pollutant_avg is treated as a sub-index, NEVER as a raw µg/m³ concentration
-        self.assertEqual(mandir_pm25.value_kind, "sub_index")
+        # Unitless CPCB OGD pollutant_avg must NOT be assumed to be a sub-index or concentration:
+        # it is stored for auditability with value_kind='unverified_scale' and is_valid=False.
+        self.assertEqual(mandir_pm25.value_kind, "invalid")
+        self.assertFalse(mandir_pm25.is_valid)
         self.assertIsNone(mandir_pm25.normalized_concentration)
         self.assertIsNone(mandir_pm25.normalized_unit)
-        self.assertEqual(mandir_pm25.calculated_sub_index, 248)
-        self.assertTrue(mandir_pm25.is_valid)
+        self.assertIsNone(mandir_pm25.calculated_sub_index)
         self.assertEqual(mandir_pm25.observed_at_utc, "2026-11-02T05:30:00Z")
 
-        # SO2='NA' is recorded in raw_station_observations as missing/invalid for auditability
         mandir_so2 = next(
             o
             for o in report.accepted_observations

@@ -43,3 +43,21 @@ export function relativeTime(iso: string | null, now = referenceNow()) {
   const h = Math.max(0, Math.round((now.getTime() - new Date(iso).getTime()) / 3600000));
   return h <= 1 ? "Updated ~1h ago" : `Updated ${h}h ago`;
 }
+
+export function formatTrendDate(d: string): string {
+  const parts = d.split("-");
+  if (parts.length === 3) {
+    const year = Number(parts[0]);
+    const month = Number(parts[1]) - 1;
+    const day = Number(parts[2]);
+    if (!Number.isNaN(year) && !Number.isNaN(month) && !Number.isNaN(day)) {
+      const utcDate = new Date(Date.UTC(year, month, day));
+      return utcDate.toLocaleDateString("en-IN", {
+        day: "numeric",
+        month: "short",
+        timeZone: "UTC",
+      });
+    }
+  }
+  return new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+}

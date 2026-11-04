@@ -1,13 +1,15 @@
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-
+import { DATA_IS_ILLUSTRATIVE } from "@/data";
 
 export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen">
-      <div className="border-b border-terracotta/30 bg-accent px-4 py-1.5 text-center text-xs text-terracotta">
-        Design prototype · All figures are illustrative data — not live measurements
-      </div>
+      {DATA_IS_ILLUSTRATIVE && (
+        <div className="border-b border-terracotta/30 bg-accent px-4 py-1.5 text-center text-xs text-terracotta">
+          Design prototype · All figures are illustrative data — not live measurements
+        </div>
+      )}
       <header className="border-b bg-background">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-4 md:px-8">
           <Link to="/" className="flex items-baseline gap-2">
@@ -24,7 +26,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <main className="mx-auto max-w-6xl px-5 py-10 md:px-8 md:py-14">{children}</main>
       <footer className="border-t">
         <div className="mx-auto flex max-w-6xl flex-wrap justify-between gap-2 px-5 py-6 text-xs text-muted-foreground md:px-8">
-          <span>DistrictWatch prototype · AQI categories follow India's National AQI bands</span>
+          <span>DistrictWatch · AQI categories follow India's National AQI bands</span>
           <Link to="/methodology" className="hover:text-foreground">Methodology & data quality</Link>
         </div>
       </footer>

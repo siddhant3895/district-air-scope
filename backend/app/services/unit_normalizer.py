@@ -1,9 +1,12 @@
 """Pollutant unit validation, molecular-weight conversion, and source-semantics normalizer.
 
-Enforces two strict rules:
+Enforces three strict data-integrity rules:
 1. Validate pollutant units using the actual upstream unit fields (`raw_unit`).
-2. Never assume `pollutant_avg` (or any upstream numeric field) is already a sub-index
-   or a raw concentration without checking its unit and upstream source semantics.
+2. Never assume a unitless value (`raw_unit` is None, empty, or 'NA') is a sub-index
+   or a physical concentration.
+3. If upstream unit or scale semantics cannot be established unambiguously from the
+   record's fields, fail safely (`value_kind='unverified_scale'`, `is_valid=False`) so
+   the adapter can never silently produce incorrect AQI values.
 """
 from __future__ import annotations
 
@@ -36,7 +39,7 @@ CANONICAL_UNITS: Dict[PollutantKey, str] = {
 
 UG_M3_ALIASES = {"µg/m³", "ug/m3", "ug/m³", "μg/m³", "microgram/m3"}
 MG_M3_ALIASES = {"mg/m³", "mg/m3", "milligram/m3"}
-SUB_INDEX_UNIT_ALIASES = {"aqi", "sub_index", "sub-index", "index", "naqi"}
+EXPLICIT_SUB_INDEX_UNITS = {"aqi", "sub_index", "sub-index", "naqi"}
 
 
 @dataclass(frozen=True)
@@ -57,7 +60,18 @@ def normalize_upstream_observation(
     raw_unit: Optional[str],
     explicit_value_kind: Optional[str] = None,
 ) -> NormalizedObservationResult:
-    """Validate and normalize a raw upstream reading based on its unit and source semantics."""
+    """Validate and normalize a raw upstream reading based strictly on explicit unit and scale metadata.
+
+    Why unitless values fail safely:
+    In CPCB's `data.gov.in` resource `3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69`, the schema
+    includes `pollutant_unit` (keyword) and `pollutant_avg` (double), but actual API
+    records populate `pollutant_unit` as literal `'NA'` without documenting whether
+    `pollutant_avg` is a raw concentration or a pre-calculated CPCB sub-index.
+    Assuming a unitless number is a sub-index (or a concentration) can silently corrupt AQI
+    calculations. Therefore, any record with a missing or `'NA'` unit is rejected safely
+    (`value_kind='unverified_scale'`, `is_valid=False`) while still being stored in
+    `raw_station_observations` for auditability.
+    """
     text = str(raw_value_text).strip() if raw_value_text is not None else ""
     if not text or text.upper() in {"NA", "N/A", "NULL", "NONE", "-", ""}:
         return NormalizedObservationResult(
@@ -94,15 +108,36 @@ def normalize_upstream_observation(
     unit_clean = raw_unit.strip().lower() if raw_unit and raw_unit.strip() else None
     kind_clean = explicit_value_kind.strip().lower() if explicit_value_kind else None
 
-    # Case 1: Upstream record explicitly declares or lacks concentration units on CPCB OGD
-    # In data.gov.in resource 3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69, CPCB publishes
-    # pre-calculated pollutant sub-indices (0-500) with no unit field (or unit='NA').
-    # We NEVER treat a unitless CPCB OGD pollutant_avg as a raw concentration.
-    if unit_clean in SUB_INDEX_UNIT_ALIASES or (
-        source_provider == "cpcb_ogd"
-        and (unit_clean is None or unit_clean == "na")
-        and kind_clean in (None, "sub_index")
-    ):
+    # Safe Failure Rule: Never assume a unitless or 'NA'-unit value is a sub-index or concentration.
+    if unit_clean is None or unit_clean in {"na", "n/a", "none", "null", "-", "unknown"}:
+        return NormalizedObservationResult(
+            value_kind="invalid",
+            normalized_concentration=None,
+            normalized_unit=None,
+            calculated_sub_index=None,
+            is_valid=False,
+            validation_note=(
+                f"Rejected safely: upstream {source_provider} record has missing or 'NA' unit "
+                f"(raw_unit={raw_unit!r}); cannot verify whether value '{text}' is a physical "
+                f"concentration or a pre-calculated sub-index."
+            ),
+        )
+
+    # Explicit Sub-Index Case: Only accepted when the upstream unit explicitly states an index scale
+    # AND explicit_value_kind confirms sub_index semantics.
+    if unit_clean in EXPLICIT_SUB_INDEX_UNITS:
+        if kind_clean != "sub_index":
+            return NormalizedObservationResult(
+                value_kind="invalid",
+                normalized_concentration=None,
+                normalized_unit=None,
+                calculated_sub_index=None,
+                is_valid=False,
+                validation_note=(
+                    f"Rejected safely: unit '{raw_unit}' indicates an index scale but "
+                    f"explicit_value_kind='{explicit_value_kind}' did not confirm sub_index semantics."
+                ),
+            )
         if numeric_val > 500.0:
             return NormalizedObservationResult(
                 value_kind="invalid",
@@ -110,7 +145,7 @@ def normalize_upstream_observation(
                 normalized_unit=None,
                 calculated_sub_index=None,
                 is_valid=False,
-                validation_note=f"CPCB sub-index {numeric_val} exceeds maximum 500 scale ceiling.",
+                validation_note=f"Sub-index {numeric_val} exceeds maximum 500 scale ceiling.",
             )
         return NormalizedObservationResult(
             value_kind="sub_index",
@@ -118,29 +153,15 @@ def normalize_upstream_observation(
             normalized_unit=None,
             calculated_sub_index=int(round(numeric_val)),
             is_valid=True,
-            validation_note=(
-                "Validated as dimensionless CPCB pollutant sub-index (0-500); "
-                "raw concentration intentionally left null because upstream omits concentration units."
-            ),
+            validation_note=f"Verified explicit sub-index (raw_unit='{raw_unit}').",
         )
 
-    # Case 2: Concentration value — requires an explicit, recognized physical concentration unit
-    if unit_clean is None:
-        return NormalizedObservationResult(
-            value_kind="invalid",
-            normalized_concentration=None,
-            normalized_unit=None,
-            calculated_sub_index=None,
-            is_valid=False,
-            validation_note=f"Missing upstream unit field for {source_provider} observation.",
-        )
-
+    # Concentration Case: Requires a verified physical concentration unit
     target_unit = CANONICAL_UNITS[pollutant_key]
     converted_conc: Optional[float] = None
     conversion_note = ""
 
     if pollutant_key in ("PM2.5", "PM10"):
-        # Particulates must be reported in mass/volume (µg/m³ or mg/m³)
         if unit_clean in UG_M3_ALIASES:
             converted_conc = numeric_val
             conversion_note = "Verified mass concentration in µg/m³."
@@ -157,7 +178,6 @@ def normalize_upstream_observation(
                 validation_note=f"Unsupported particulate unit '{raw_unit}' for {pollutant_key}.",
             )
     elif pollutant_key == "CO":
-        # CO canonical unit is mg/m³
         mw = MOLECULAR_WEIGHTS["CO"]
         if unit_clean in MG_M3_ALIASES:
             converted_conc = numeric_val
@@ -181,7 +201,6 @@ def normalize_upstream_observation(
                 validation_note=f"Unsupported CO unit '{raw_unit}'.",
             )
     else:
-        # Gaseous pollutants (NO2, SO2, O3) -> canonical unit is µg/m³
         mw = MOLECULAR_WEIGHTS[pollutant_key]
         if unit_clean in UG_M3_ALIASES:
             converted_conc = numeric_val

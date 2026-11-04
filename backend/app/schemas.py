@@ -1,7 +1,7 @@
 """Pydantic schemas matching the frontend TypeScript contracts in src/data/types.ts 1:1."""
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 PollutantKey = Literal["PM2.5", "PM10", "NO2", "SO2", "O3", "CO"]
@@ -17,7 +17,7 @@ class District(BaseModel):
 
 
 class Reading(BaseModel):
-    date: str = Field(..., description="ISO calendar date (YYYY-MM-DD)")
+    date: str = Field(..., description="ISO calendar date in IST (YYYY-MM-DD)")
     aqi: Optional[int] = Field(None, description="Daily mean Indian NAQI, or null if missing")
 
 
@@ -46,6 +46,17 @@ class DistrictSnapshot(BaseModel):
     )
 
 
+class ProviderHealthStatus(BaseModel):
+    configured: bool
+    lastSyncStatus: str = Field(
+        "never_run",
+        description="Provider sync status: not_configured | never_run | succeeded | failed",
+    )
+    lastSyncError: Optional[str] = None
+    lastObservationAt: Optional[str] = None
+    hasFreshData: bool = False
+
+
 class HealthResponse(BaseModel):
     status: str
     phase: str
@@ -54,3 +65,6 @@ class HealthResponse(BaseModel):
     openaqKeyConfigured: bool
     districtsTracked: int
     lastIngestedAt: Optional[str] = None
+    lastSyncStatus: str = "never_run"
+    freshDistrictsCount: int = 0
+    providers: Dict[str, ProviderHealthStatus] = Field(default_factory=dict)
