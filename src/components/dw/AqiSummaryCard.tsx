@@ -60,10 +60,7 @@ export function AqiSummaryCard({
             <p className="mb-2 text-sm text-muted-foreground">{b?.hint}</p>
             <div className="flex h-2 overflow-hidden rounded-sm" aria-hidden>
               {AQI_BANDS.map((x) => (
-                <div
-                  key={x.key}
-                  className={cn("flex-1", x.bg, x.key !== b?.key && "opacity-30")}
-                />
+                <div key={x.key} className={cn("flex-1", x.bg, x.key !== b?.key && "opacity-30")} />
               ))}
             </div>
             <div className="mt-1 flex justify-between text-[11px] text-muted-foreground">

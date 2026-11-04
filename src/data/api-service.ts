@@ -78,10 +78,7 @@ export function createApiService({ baseUrl, fallback }: ApiServiceOptions): AirQ
     async getSnapshot(id: string, anchorDate?: string): Promise<DistrictSnapshot | null> {
       try {
         const qs = buildQueryString(anchorDate ? { anchorDate } : undefined);
-        return await request<DistrictSnapshot>(
-          `/snapshots/${encodeURIComponent(id)}${qs}`,
-          true,
-        );
+        return await request<DistrictSnapshot>(`/snapshots/${encodeURIComponent(id)}${qs}`, true);
       } catch (err) {
         if (fallback) return fallback.getSnapshot(id, anchorDate);
         throw err;
