@@ -50,24 +50,24 @@ describe("Frontend-Backend API Integration Contract", () => {
       calls.push(url);
 
       if (url.endsWith("/districts?state=Maharashtra&q=nagpur")) {
-        return new Response(
-          JSON.stringify([SAMPLE_NAGPUR_SNAPSHOT.district]),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
+        return new Response(JSON.stringify([SAMPLE_NAGPUR_SNAPSHOT.district]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }
 
       if (url.endsWith("/snapshots?state=Maharashtra&q=nagpur&anchor_date=2026-11-02")) {
-        return new Response(
-          JSON.stringify([SAMPLE_NAGPUR_SNAPSHOT]),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
+        return new Response(JSON.stringify([SAMPLE_NAGPUR_SNAPSHOT]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }
 
       if (url.endsWith("/snapshots/nagpur?anchor_date=2026-11-02")) {
-        return new Response(
-          JSON.stringify(SAMPLE_NAGPUR_SNAPSHOT),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
+        return new Response(JSON.stringify(SAMPLE_NAGPUR_SNAPSHOT), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }
 
       if (url.endsWith("/snapshots/unknown-district")) {
@@ -141,7 +141,9 @@ describe("Frontend-Backend API Integration Contract", () => {
       expect(health?.lastSyncStatus).toBe("succeeded");
       expect(health?.providers?.["openaq_v3"]?.hasFreshData).toBe(true);
 
-      expect(calls).toContain("http://localhost:8000/api/snapshots?state=Maharashtra&q=nagpur&anchor_date=2026-11-02");
+      expect(calls).toContain(
+        "http://localhost:8000/api/snapshots?state=Maharashtra&q=nagpur&anchor_date=2026-11-02",
+      );
       expect(calls).toContain("http://localhost:8000/api/snapshots/nagpur?anchor_date=2026-11-02");
     } finally {
       globalThis.fetch = origFetch;

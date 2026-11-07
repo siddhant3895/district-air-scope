@@ -15,7 +15,7 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 class TestStage3OpenAqDiscoveryAndValidation(unittest.TestCase):
     def test_location_discovery_and_availability_validation(self) -> None:
-        payload = json.loads((FIXTURES_DIR / "openaq_locations_sample.json").read_text())
+        payload = json.loads((FIXTURES_DIR / "openaq_locations_sample.json").read_text(encoding="utf-8"))
         results = payload["results"]
         ref_now = datetime(2026, 11, 2, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -39,7 +39,7 @@ class TestStage3OpenAqDiscoveryAndValidation(unittest.TestCase):
         self.assertIn("isMonitor=False", non_ref_loc.rejection_reason or "")
 
     def test_hourly_payload_coverage_and_negative_value_filtering(self) -> None:
-        payload = json.loads((FIXTURES_DIR / "openaq_hours_sample.json").read_text())
+        payload = json.loads((FIXTURES_DIR / "openaq_hours_sample.json").read_text(encoding="utf-8"))
         obs = parse_openaq_hourly_payload(
             station_id="cpcb:new-delhi:mandir-marg",
             sensor_id=23534,

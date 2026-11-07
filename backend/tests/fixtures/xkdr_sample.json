@@ -1,0 +1,55 @@
+{
+  "meta": {
+    "dataset": "India Air Quality Database",
+    "maintainer": "XKDR Forum",
+    "license": "CC BY 4.0",
+    "exported_at": "2026-04-01T00:00:00Z",
+    "months": ["2024-11", "2024-12", "2026-03"],
+    "tier": "personal",
+    "row_cap": null
+  },
+  "parameters": [
+    {"parameter_name": "PM2.5", "unit": "µg/m³", "n_stations": 554, "n_rows": 28400000},
+    {"parameter_name": "PM10", "unit": "µg/m³", "n_stations": 532, "n_rows": 26100000},
+    {"parameter_name": "NO2", "unit": "µg/m³", "n_stations": 540, "n_rows": 27200000},
+    {"parameter_name": "SO2", "unit": "µg/m³", "n_stations": 528, "n_rows": 25900000},
+    {"parameter_name": "Ozone", "unit": "µg/m³", "n_stations": 515, "n_rows": 24800000},
+    {"parameter_name": "CO", "unit": "mg/m³", "n_stations": 535, "n_rows": 26500000},
+    {"parameter_name": "AT", "unit": "°C", "n_stations": 480, "n_rows": 21000000}
+  ],
+  "stations": [
+    {
+      "station_id": "site_103",
+      "station_name": "Mandir Marg, Delhi - DPCC",
+      "city_name": "Delhi",
+      "state_name": "Delhi",
+      "source": "cpcb_caaqm",
+      "latitude": 28.6364,
+      "longitude": 77.2011,
+      "first_seen": "2011-01-01 00:00:00",
+      "last_seen": "2026-11-02 17:00:00"
+    },
+    {
+      "station_id": "site_301",
+      "station_name": "Anand Vihar, Delhi - DPCC",
+      "city_name": "Delhi",
+      "state_name": "Delhi",
+      "source": "cpcb_caaqm",
+      "latitude": 28.6469,
+      "longitude": 77.3164,
+      "first_seen": "2011-01-01 00:00:00",
+      "last_seen": "2026-11-02 17:00:00"
+    },
+    {
+      "station_id": "site_509",
+      "station_name": "Lalbagh, Lucknow - CPCB",
+      "city_name": "Lucknow",
+      "state_name": "Uttar Pradesh",
+      "source": "cpcb_caaqm",
+      "latitude": 26.846,
+      "longitude": 80.9462,
+      "first_seen": "2015-06-01 00:00:00",
+      "last_seen": "2026-11-02 17:00:00"
+    }
+  ]
+}

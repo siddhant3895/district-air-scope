@@ -120,6 +120,10 @@ def validate_openaq_location(
         if param_unit.lower() not in {u.lower() for u in SUPPORTED_OPENAQ_UNITS}:
             continue
 
+        # If multiple sensors exist for the same pollutant at a location, prefer the one with newer datetimeLast or higher sensor_id
+        existing_sensor = valid_sensors.get(pollutant_key)
+        if existing_sensor is not None and int(sensor_id) < existing_sensor.sensor_id:
+            continue
         valid_sensors[pollutant_key] = ValidatedOpenAqSensor(
             sensor_id=int(sensor_id),
             pollutant_key=pollutant_key,

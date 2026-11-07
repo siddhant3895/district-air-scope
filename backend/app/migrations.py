@@ -148,6 +148,9 @@ MIGRATIONS: Tuple[Tuple[int, str, str], ...] = (
             openaq_status TEXT NOT NULL,
             openaq_observations_ingested INTEGER NOT NULL DEFAULT 0,
             openaq_error TEXT,
+            xkdr_status TEXT NOT NULL DEFAULT 'not_configured',
+            xkdr_observations_ingested INTEGER NOT NULL DEFAULT 0,
+            xkdr_error TEXT,
             daily_district_records_updated INTEGER NOT NULL DEFAULT 0
         );
         """,
@@ -849,6 +852,20 @@ def run_migrations(conn: sqlite3.Connection) -> List[int]:
         )
         newly_applied.append(version)
 
+    sync_cols = {
+        r["name"]
+        for r in conn.execute("PRAGMA table_info(ingestion_sync_runs)").fetchall()
+    }
+    if sync_cols and "xkdr_status" not in sync_cols:
+        conn.executescript(
+            """
+            ALTER TABLE ingestion_sync_runs ADD COLUMN xkdr_status TEXT NOT NULL DEFAULT 'not_configured';
+            ALTER TABLE ingestion_sync_runs ADD COLUMN xkdr_observations_ingested INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE ingestion_sync_runs ADD COLUMN xkdr_error TEXT;
+            """
+        )
+        conn.execute("PRAGMA foreign_keys = ON;")
+
     conn.commit()
     return newly_applied
 
@@ -1207,4 +1224,7 @@ def get_latest_sync_run(conn: sqlite3.Connection) -> Optional[SyncRunRecord]:
         openaq_observations_ingested=int(row["openaq_observations_ingested"]),
         openaq_error=row["openaq_error"],
         daily_district_records_updated=int(row["daily_district_records_updated"]),
+        xkdr_status=row["xkdr_status"] if "xkdr_status" in row.keys() and row["xkdr_status"] else "not_configured",
+        xkdr_observations_ingested=int(row["xkdr_observations_ingested"]) if "xkdr_observations_ingested" in row.keys() and row["xkdr_observations_ingested"] is not None else 0,
+        xkdr_error=row["xkdr_error"] if "xkdr_error" in row.keys() else None,
     )

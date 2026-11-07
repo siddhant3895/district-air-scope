@@ -14,12 +14,32 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-4 md:px-8">
           <Link to="/" className="flex items-baseline gap-2">
             <span className="font-display text-2xl leading-none">DistrictWatch</span>
-            <span className="hidden text-xs text-muted-foreground sm:inline">Air quality, district by district</span>
+            <span className="hidden text-xs text-muted-foreground sm:inline">
+              Air quality, district by district
+            </span>
           </Link>
           <nav className="flex gap-1 text-sm">
-            <Link to="/" activeOptions={{ exact: true, includeSearch: false }} className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground data-[status=active]:bg-secondary data-[status=active]:text-foreground">Overview</Link>
-            <Link to="/districts/$districtId" params={{ districtId: "new-delhi" }} activeOptions={{ exact: false }} className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground data-[status=active]:bg-secondary data-[status=active]:text-foreground">Districts</Link>
-            <Link to="/methodology" className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground data-[status=active]:bg-secondary data-[status=active]:text-foreground">Methodology</Link>
+            <Link
+              to="/"
+              activeOptions={{ exact: true, includeSearch: false }}
+              className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground data-[status=active]:bg-secondary data-[status=active]:text-foreground"
+            >
+              Overview
+            </Link>
+            <Link
+              to="/districts/$districtId"
+              params={{ districtId: "new-delhi" }}
+              activeOptions={{ exact: false }}
+              className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground data-[status=active]:bg-secondary data-[status=active]:text-foreground"
+            >
+              Districts
+            </Link>
+            <Link
+              to="/methodology"
+              className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground data-[status=active]:bg-secondary data-[status=active]:text-foreground"
+            >
+              Methodology
+            </Link>
           </nav>
         </div>
       </header>
@@ -27,7 +47,9 @@ export function AppShell({ children }: { children: ReactNode }) {
       <footer className="border-t">
         <div className="mx-auto flex max-w-6xl flex-wrap justify-between gap-2 px-5 py-6 text-xs text-muted-foreground md:px-8">
           <span>DistrictWatch · AQI categories follow India's National AQI bands</span>
-          <Link to="/methodology" className="hover:text-foreground">Methodology & data quality</Link>
+          <Link to="/methodology" className="hover:text-foreground">
+            Methodology & data quality
+          </Link>
         </div>
       </footer>
     </div>

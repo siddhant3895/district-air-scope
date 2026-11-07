@@ -42,7 +42,7 @@ npm run dev
 
 DistrictWatch connects to the Python FastAPI backend (`backend/`) in live mode by default (`VITE_DATA_MODE=live`).
 
-### Environment Variables (`.env`)
+### Frontend Environment Variables (`.env`)
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
@@ -50,3 +50,13 @@ DistrictWatch connects to the Python FastAPI backend (`backend/`) in live mode b
 | `VITE_API_BASE_URL` | `/api` | Base URL used by the client/browser adapter (`src/data/api-service.ts`). Use `/api` when reverse-proxied from the same origin (or during `vite dev`), or set to an absolute URL (e.g., `https://api.districtwatch.example.com/api`) when the backend is hosted on a separate origin. |
 | `VITE_BACKEND_ORIGIN` | `http://localhost:8000` | **SSR & Proxy Backend Origin**: Required whenever `VITE_API_BASE_URL` is a relative path (`/api`). During server-side rendering (SSR) in TanStack Start, Node.js `fetch()` cannot resolve relative URLs without an origin, so `src/data/api-service.ts` prepends `VITE_BACKEND_ORIGIN` (e.g., `http://localhost:8000` locally or `http://backend-api:8000` in Docker). `vite.config.ts` also uses `VITE_BACKEND_ORIGIN` for the `/api` dev proxy. |
 | `VITE_ALLOW_MOCK_FALLBACK` | `false` | Must remain `false` in staging and production; production builds (`import.meta.env.PROD`) strictly forbid mock fallback. |
+
+### Backend Data Provider Environment Variables (`backend/.env`)
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `XKDR_API_KEY` | *(empty)* | Bearer token for the [India Air Quality Database by XKDR Forum](https://airquality.xkdr.org/) (CPCB CAAQM + US Diplomatic Post hourly readings, CC BY 4.0). Register for a free personal key at `https://airquality.xkdr.org/signup` (or use the public demo key `aqi_demo_wbf92Qx21zX-Wa_Tg8Dx1nXe` for 2024 archive data). |
+| `XKDR_API_BASE_URL` | `https://airquality.xkdr.org` | Base URL for XKDR API v1 (`/v1/meta`, `/v1/stations`, `/v1/parameters`, `/v1/measurements`). |
+| `OPENAQ_API_KEY` | *(empty)* | API key for [OpenAQ v3](https://explore.openaq.org/register) (`X-API-Key` header). |
+| `DATA_GOV_IN_API_KEY` | *(empty)* | Optional API key for CPCB OGD (`data.gov.in`). |
+| `DATABASE_URL` | `sqlite:///./districtwatch.db` | SQLite database path used for station registry, raw observations, station AQI evaluations, and 30-day district history. |

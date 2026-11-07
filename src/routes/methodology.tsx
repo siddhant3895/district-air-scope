@@ -8,9 +8,16 @@ export const Route = createFileRoute("/methodology")({
   head: () => ({
     meta: [
       { title: "Methodology & data quality — DistrictWatch" },
-      { name: "description", content: "How DistrictWatch handles CPCB and OpenAQ sources, coverage, freshness, missing data and station-first aggregation." },
+      {
+        name: "description",
+        content:
+          "How DistrictWatch handles CPCB, XKDR Forum, and OpenAQ sources, coverage, freshness, missing data and station-first aggregation.",
+      },
       { property: "og:title", content: "Methodology & data quality — DistrictWatch" },
-      { property: "og:description", content: "Sources, coverage, freshness and limitations behind DistrictWatch AQI figures." },
+      {
+        property: "og:description",
+        content: "Sources, coverage, freshness and limitations behind DistrictWatch AQI figures.",
+      },
       { property: "og:type", content: "article" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
@@ -22,7 +29,7 @@ const SECTIONS = [
   {
     id: "sources",
     title: "Data sources & station-first aggregation",
-    body: "Readings originate from Continuous Ambient Air Quality Monitoring Stations (CAAQMS) operated by the Central Pollution Control Board (CPCB), State Pollution Control Boards (SPCBs), IITM, and IMD, accessed via the Open Government Data Platform India (data.gov.in, Resource 3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69 under GODL-India) and OpenAQ API v3. Sub-indices (24-hour window for PM2.5, PM10, NO2, SO2; 8-hour window for CO and O3) and station AQIs are calculated per station first. District figures represent the DistrictWatch composite mean of valid station-level AQIs — not an official CPCB administrative district index.",
+    body: "Readings originate from Continuous Ambient Air Quality Monitoring Stations (CAAQMS) operated by the Central Pollution Control Board (CPCB), State Pollution Control Boards (SPCBs), IITM, and IMD, accessed via the India Air Quality Database maintained by XKDR Forum (airquality.xkdr.org, CC BY 4.0), OpenAQ API v3, and the Open Government Data Platform India (data.gov.in, Resource 3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69 under GODL-India). Sub-indices (24-hour window for PM2.5, PM10, NO2, SO2; 8-hour window for CO and O3) and station AQIs are calculated per station first. District figures represent the DistrictWatch composite mean of valid station-level AQIs — not an official CPCB administrative district index.",
   },
   {
     id: "coverage",
@@ -52,8 +59,16 @@ function Methodology() {
       <div className="grid gap-12 lg:grid-cols-[14rem_1fr]">
         <nav className="hidden lg:block" aria-label="Sections">
           <ul className="sticky top-8 space-y-2 text-sm">
-            {[...SECTIONS, { id: "quality", title: "Quality levels" }, { id: "scale", title: "AQI scale" }].map((s) => (
-              <li key={s.id}><a href={`#${s.id}`} className="text-muted-foreground hover:text-foreground">{s.title}</a></li>
+            {[
+              ...SECTIONS,
+              { id: "quality", title: "Quality levels" },
+              { id: "scale", title: "AQI scale" },
+            ].map((s) => (
+              <li key={s.id}>
+                <a href={`#${s.id}`} className="text-muted-foreground hover:text-foreground">
+                  {s.title}
+                </a>
+              </li>
             ))}
           </ul>
         </nav>
@@ -62,7 +77,8 @@ function Methodology() {
           <h1 className="text-4xl leading-[1.05] md:text-6xl">How we read the numbers.</h1>
           {DATA_IS_ILLUSTRATIVE && (
             <p className="mt-5 rounded-md border border-terracotta/40 bg-accent p-4 text-sm text-terracotta">
-              Illustrative mode active. Switch VITE_DATA_MODE=live to query the DistrictWatch FastAPI backend.
+              Illustrative mode active. Switch VITE_DATA_MODE=live to query the DistrictWatch
+              FastAPI backend.
             </p>
           )}
 
@@ -78,22 +94,51 @@ function Methodology() {
             <p className="eyebrow mb-1">06</p>
             <h2 className="text-3xl">Quality levels</h2>
             <ul className="mt-4 space-y-3 text-sm">
-              <li className="flex flex-wrap gap-3"><QualityIndicator level="high" /><span className="text-muted-foreground">≥ 85% window coverage across 3+ reporting stations</span></li>
-              <li className="flex flex-wrap gap-3"><QualityIndicator level="medium" /><span className="text-muted-foreground">60–85% window coverage across 3+ reporting stations</span></li>
-              <li className="flex flex-wrap gap-3"><QualityIndicator level="low" /><span className="text-muted-foreground">&lt; 60% window coverage or ≤ 2 reporting stations</span></li>
-              <li className="flex flex-wrap gap-3"><QualityIndicator level="unavailable" /><span className="text-muted-foreground">No valid station readings received in window</span></li>
+              <li className="flex flex-wrap gap-3">
+                <QualityIndicator level="high" />
+                <span className="text-muted-foreground">
+                  ≥ 85% window coverage across 3+ reporting stations
+                </span>
+              </li>
+              <li className="flex flex-wrap gap-3">
+                <QualityIndicator level="medium" />
+                <span className="text-muted-foreground">
+                  60–85% window coverage across 3+ reporting stations
+                </span>
+              </li>
+              <li className="flex flex-wrap gap-3">
+                <QualityIndicator level="low" />
+                <span className="text-muted-foreground">
+                  &lt; 60% window coverage or ≤ 2 reporting stations
+                </span>
+              </li>
+              <li className="flex flex-wrap gap-3">
+                <QualityIndicator level="unavailable" />
+                <span className="text-muted-foreground">
+                  No valid station readings received in window
+                </span>
+              </li>
             </ul>
           </section>
 
           <section id="scale" className="scroll-mt-8 py-8">
             <p className="eyebrow mb-1">07</p>
             <h2 className="text-3xl">AQI scale</h2>
-            <p className="mt-3 text-sm text-muted-foreground">Categories follow India's National Air Quality Index bands.</p>
+            <p className="mt-3 text-sm text-muted-foreground">
+              Categories follow India's National Air Quality Index bands.
+            </p>
             <ul className="mt-4 overflow-hidden rounded-md border">
               {AQI_BANDS.map((b) => (
-                <li key={b.key} className="grid grid-cols-[7.5rem_5rem_1fr] items-center gap-3 border-b bg-card px-3 py-2.5 text-sm last:border-b-0">
-                  <span className={`rounded-sm px-2 py-0.5 text-xs font-medium ${b.bg} ${b.text}`}>{b.label}</span>
-                  <span className="tabular-nums">{b.min}–{b.max}</span>
+                <li
+                  key={b.key}
+                  className="grid grid-cols-[7.5rem_5rem_1fr] items-center gap-3 border-b bg-card px-3 py-2.5 text-sm last:border-b-0"
+                >
+                  <span className={`rounded-sm px-2 py-0.5 text-xs font-medium ${b.bg} ${b.text}`}>
+                    {b.label}
+                  </span>
+                  <span className="tabular-nums">
+                    {b.min}–{b.max}
+                  </span>
                   <span className="text-muted-foreground">{b.hint}</span>
                 </li>
               ))}

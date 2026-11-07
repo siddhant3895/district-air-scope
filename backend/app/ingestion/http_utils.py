@@ -87,7 +87,12 @@ class RateLimitedHttpClient:
                     continue
 
                 resp.raise_for_status()
-                return resp.json()
+                try:
+                    return resp.json()
+                except ValueError:
+                    import csv, io
+                    reader = csv.DictReader(io.StringIO(resp.text.strip()))
+                    return [dict(r) for r in reader]
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_exc = exc
                 if attempt < self.max_retries:
@@ -106,7 +111,7 @@ class RateLimitedHttpClient:
 def create_shared_http_client(
     settings: Optional[Settings] = None,
     *,
-    timeout_sec: float = 25.0,
+    timeout_sec: float = 60.0,
     sleep_fn: Callable[[float], None] = time.sleep,
     clock_fn: Callable[[], float] = time.monotonic,
     transport: Optional[httpx.BaseTransport] = None,

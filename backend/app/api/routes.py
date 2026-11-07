@@ -110,10 +110,13 @@ def get_health() -> HealthResponse:
 
     cpcb_last_obs: Optional[str] = None
     openaq_last_obs: Optional[str] = None
+    xkdr_last_obs: Optional[str] = None
     cpcb_sync_status = "not_configured" if not settings.cpcb_configured else "never_run"
     openaq_sync_status = "not_configured" if not settings.openaq_configured else "never_run"
+    xkdr_sync_status = "not_configured" if not settings.xkdr_configured else "never_run"
     cpcb_sync_err: Optional[str] = None
     openaq_sync_err: Optional[str] = None
+    xkdr_sync_err: Optional[str] = None
 
     with get_db_connection() as conn:
         if _table_exists(conn, "raw_station_observations"):
@@ -134,6 +137,12 @@ def get_health() -> HealthResponse:
             ).fetchone()
             if row_oaq and row_oaq["max_obs"]:
                 openaq_last_obs = row_oaq["max_obs"]
+
+            row_xkdr = conn.execute(
+                "SELECT MAX(observed_at_utc) AS max_obs FROM raw_station_observations WHERE source_provider = 'xkdr' AND is_valid = 1"
+            ).fetchone()
+            if row_xkdr and row_xkdr["max_obs"]:
+                xkdr_last_obs = row_xkdr["max_obs"]
 
         if _table_exists(conn, "daily_district_history"):
             rows_hist = conn.execute(
@@ -158,6 +167,9 @@ def get_health() -> HealthResponse:
             cpcb_sync_err = sync_run.cpcb_error
             openaq_sync_status = sync_run.openaq_status
             openaq_sync_err = sync_run.openaq_error
+            if settings.xkdr_configured or sync_run.xkdr_status != "not_configured":
+                xkdr_sync_status = sync_run.xkdr_status
+                xkdr_sync_err = sync_run.xkdr_error
 
     cpcb_fresh = bool(
         cpcb_last_obs
@@ -169,6 +181,12 @@ def get_health() -> HealthResponse:
         openaq_last_obs
         and not is_reading_stale(
             openaq_last_obs, stale_threshold_hours=settings.stale_threshold_hours
+        )
+    )
+    xkdr_fresh = bool(
+        xkdr_last_obs
+        and not is_reading_stale(
+            xkdr_last_obs, stale_threshold_hours=settings.stale_threshold_hours
         )
     )
 
@@ -186,6 +204,13 @@ def get_health() -> HealthResponse:
             lastSyncError=openaq_sync_err,
             lastObservationAt=openaq_last_obs,
             hasFreshData=openaq_fresh,
+        ),
+        "xkdr": ProviderHealthStatus(
+            configured=settings.xkdr_configured,
+            lastSyncStatus=xkdr_sync_status,
+            lastSyncError=xkdr_sync_err,
+            lastObservationAt=xkdr_last_obs,
+            hasFreshData=xkdr_fresh,
         ),
     }
 
@@ -205,6 +230,7 @@ def get_health() -> HealthResponse:
         liveDataReady=live_data_ready,
         cpcbKeyConfigured=settings.cpcb_configured,
         openaqKeyConfigured=settings.openaq_configured,
+        xkdrKeyConfigured=settings.xkdr_configured,
         districtsTracked=len(districts),
         lastIngestedAt=last_ingested,
         lastSyncStatus=last_sync_status,

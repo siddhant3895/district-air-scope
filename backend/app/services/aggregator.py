@@ -75,22 +75,59 @@ def ist_date_bounds_in_utc(ist_date_str: str) -> Tuple[datetime, datetime]:
     return start_ist.astimezone(timezone.utc), end_ist.astimezone(timezone.utc)
 
 
-def resolve_source_provider_label(providers: Set[str], fallback: SourceProvider = "none") -> SourceProvider:
+def resolve_source_provider_label(
+    providers: Set[str], fallback: SourceProvider = "none"
+) -> SourceProvider:
     """Determine canonical SourceProvider from the set of contributing observation providers."""
-    clean = {p for p in providers if p in ("cpcb_ogd", "openaq_v3")}
+    clean = {p for p in providers if p in ("cpcb_ogd", "openaq_v3", "xkdr")}
     if clean == {"openaq_v3"}:
         return "openaq_v3"
     if clean == {"cpcb_ogd"}:
         return "cpcb_ogd"
-    if len(clean) > 1:
+    if clean == {"xkdr"}:
+        return "xkdr"
+    if clean == {"cpcb_ogd", "openaq_v3"}:
         return "hybrid_cpcb_openaq"
+    if clean == {"xkdr", "openaq_v3"}:
+        return "hybrid_xkdr_openaq"
+    if clean == {"cpcb_ogd", "xkdr"}:
+        return "hybrid_cpcb_xkdr"
+    if len(clean) > 1:
+        return "hybrid_all"
     return fallback
 
 
 def format_district_source_attribution(providers: Set[str]) -> str:
     """Format human-readable source attribution string from contributing station providers."""
-    has_cpcb = "cpcb_ogd" in providers or "hybrid_cpcb_openaq" in providers
-    has_openaq = "openaq_v3" in providers or "hybrid_cpcb_openaq" in providers
+    has_cpcb = any(
+        p in providers
+        for p in ("cpcb_ogd", "hybrid_cpcb_openaq", "hybrid_cpcb_xkdr", "hybrid_all")
+    )
+    has_openaq = any(
+        p in providers
+        for p in ("openaq_v3", "hybrid_cpcb_openaq", "hybrid_xkdr_openaq", "hybrid_all")
+    )
+    has_xkdr = any(
+        p in providers
+        for p in ("xkdr", "hybrid_xkdr_openaq", "hybrid_cpcb_xkdr", "hybrid_all")
+    )
+    if has_xkdr and has_openaq and has_cpcb:
+        return (
+            "CPCB / SPCB CAAQMS via India Air Quality Database (XKDR Forum, CC BY 4.0), "
+            "OpenAQ v3 & data.gov.in (GODL-India)"
+        )
+    if has_xkdr and has_openaq:
+        return (
+            "CPCB / SPCB CAAQMS via India Air Quality Database (XKDR Forum, CC BY 4.0) "
+            "& OpenAQ v3"
+        )
+    if has_xkdr and has_cpcb:
+        return (
+            "CPCB / SPCB CAAQMS via India Air Quality Database (XKDR Forum, CC BY 4.0) "
+            "& data.gov.in (GODL-India)"
+        )
+    if has_xkdr:
+        return "CPCB / SPCB CAAQMS via India Air Quality Database, XKDR Forum (CC BY 4.0)"
     if has_cpcb and has_openaq:
         return "CPCB / SPCB CAAQMS via OpenAQ v3 & data.gov.in (GODL-India)"
     if has_openaq:
@@ -131,7 +168,7 @@ def evaluate_station_window(
     for obs in observations:
         if obs.station_id != station.station_id or not obs.is_valid:
             continue
-        # Accept 1-hour observations (OpenAQ) as well as validated hourly CPCB OGD station polls
+        # Accept 1-hour observations (OpenAQ / XKDR) as well as validated hourly CPCB OGD station polls
         # (each distinct hourly poll timestamp occupies at most 1 hour bucket in `by_pollutant`,
         # so 16+ distinct hourly polls in a 24h window are still strictly required to pass completeness).
         if obs.window_hours not in (1, 8, 24):
@@ -474,12 +511,20 @@ def build_snapshot_from_daily_history(
     window_days: int = 30,
 ) -> DistrictSnapshot:
     """Build a complete DistrictSnapshot from persisted DailyDistrictHistoryRecord rows."""
-    ref_date = (
-        datetime.strptime(anchor_date_str, "%Y-%m-%d").date()
-        if anchor_date_str
-        else datetime.now(IST_TZ).date()
-    )
     by_date: Dict[str, DailyDistrictHistoryRecord] = {r.date: r for r in history_records}
+    if anchor_date_str:
+        ref_date = datetime.strptime(anchor_date_str, "%Y-%m-%d").date()
+    else:
+        default_ref_date = datetime.now(IST_TZ).date()
+        today_rec = by_date.get(default_ref_date.isoformat())
+        if today_rec is not None and today_rec.district_aqi is not None:
+            ref_date = default_ref_date
+        else:
+            valid_dates = [r.date for r in history_records if r.district_aqi is not None]
+            if valid_dates:
+                ref_date = datetime.strptime(max(valid_dates), "%Y-%m-%d").date()
+            else:
+                ref_date = default_ref_date
 
     history_list: List[Reading] = []
     for i in range(window_days):

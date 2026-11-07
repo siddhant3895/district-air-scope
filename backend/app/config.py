@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(_BACKEND_DIR / ".env")
+load_dotenv(_BACKEND_DIR.parent / ".env", override=False)
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,14 @@ class Settings:
     )
     openaq_api_key: str = field(
         default_factory=lambda: os.getenv("OPENAQ_API_KEY", "").strip()
+    )
+    xkdr_api_key: str = field(
+        default_factory=lambda: os.getenv("XKDR_API_KEY", "").strip()
+    )
+    xkdr_api_base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "XKDR_API_BASE_URL", "https://airquality.xkdr.org"
+        ).strip()
     )
     database_url: str = field(
         default_factory=lambda: os.getenv(
@@ -43,7 +52,7 @@ class Settings:
             origin.strip()
             for origin in os.getenv(
                 "CORS_ORIGINS",
-                "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173",
+                "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173",
             ).split(",")
             if origin.strip()
         ]
@@ -56,6 +65,10 @@ class Settings:
     @property
     def openaq_configured(self) -> bool:
         return bool(self.openaq_api_key)
+
+    @property
+    def xkdr_configured(self) -> bool:
+        return bool(self.xkdr_api_key)
 
 
 def get_settings() -> Settings:

@@ -52,6 +52,7 @@ export interface HealthResponse {
   liveDataReady: boolean;
   cpcbKeyConfigured: boolean;
   openaqKeyConfigured: boolean;
+  xkdrKeyConfigured?: boolean | undefined;
   districtsTracked: number;
   lastIngestedAt: string | null;
   lastSyncStatus?: string | undefined;

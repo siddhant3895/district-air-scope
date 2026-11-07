@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from fastapi.testclient import TestClient
 from app.cli import recompute_district_history_window, seed_registry
+from app.services.aggregator import format_ist_date
 from app.database import get_db_connection
 from app.districts_registry import (
     TARGET_DISTRICTS,
@@ -52,7 +53,7 @@ class TestStage7NationwideAndCpcbEvaluation(unittest.TestCase):
         nagpur_stations = list_verified_stations_for_district("nagpur")
         self.assertEqual(len(nagpur_stations), 3)
         now_utc = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        today_str = now_utc.strftime("%Y-%m-%d")
+        today_str = format_ist_date(now_utc)
 
         # Insert 18 hourly CPCB OGD polls for Civil Lines, Nagpur across PM2.5 (sub_index=140), PM10 (110), NO2 (45), CO (60)
         obs = []
@@ -89,7 +90,7 @@ class TestStage7NationwideAndCpcbEvaluation(unittest.TestCase):
         with get_db_connection() as conn:
             seed_registry(conn)
             insert_raw_observations(conn, obs)
-            recompute_district_history_window(conn, anchor_date_str=today_str, days=2)
+            recompute_district_history_window(conn, anchor_date_str=today_str, days=3)
 
         snap_resp = self.client.get(f"/api/snapshots/nagpur?anchor_date={today_str}")
         self.assertEqual(snap_resp.status_code, 200)
