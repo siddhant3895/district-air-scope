@@ -1,6 +1,6 @@
 # District Air Scope
 
-**DistrictWatch** is an India-focused air-quality monitoring project built around a curated registry of 30 districts. It combines a React/TypeScript frontend with a Python FastAPI backend that ingests station observations, evaluates pollutant measurements using CPCB National Air Quality Index (NAQI) rules, and presents district snapshots with source attribution, coverage, freshness and data-quality caveats.
+**District Air Scope** is an India-focused air-quality monitoring project built around a curated registry of 30 districts. It combines a React/TypeScript frontend with a Python FastAPI backend that ingests station observations, evaluates pollutant measurements using CPCB National Air Quality Index (NAQI) rules, and presents district snapshots with source attribution, coverage, freshness and data-quality caveats.
 
 The project is under active development. A district being present in the registry does **not** mean current, valid measurements are available for it. Live data depends on provider access, station coverage, successful ingestion and the observation-completeness rules below.
 
