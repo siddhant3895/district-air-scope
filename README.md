@@ -1,4 +1,4 @@
-# District Air Scope
+# District Air Scope ------------
 
 Create a new project named DistrictWatch and build its initial FRONTEND DESIGN PROTOTYPE only. This is an air-quality monitoring platform focused initially on district-level AQI in India. Do not provision a database or invent a backend/API integration; use clearly marked illustrative mock data only and keep data access modular so we can connect a separate backend later.
 
