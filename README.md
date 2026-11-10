@@ -1,4 +1,4 @@
-# District Air Scope
+# District Air Scope ------------
 
 **District Air Scope** is an India-focused air-quality monitoring project built around a curated registry of 30 districts. It combines a React/TypeScript frontend with a Python FastAPI backend that ingests station observations, evaluates pollutant measurements using CPCB National Air Quality Index (NAQI) rules, and presents district snapshots with source attribution, coverage, freshness and data-quality caveats.
 
